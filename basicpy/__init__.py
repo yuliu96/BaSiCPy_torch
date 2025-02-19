@@ -13,5 +13,4 @@ def get_module_version():
     return __version__
 
 
-from .fuse_illu import FUSE_illu
-from .fuse_det import FUSE_det
+from .basicpy import BaSiC

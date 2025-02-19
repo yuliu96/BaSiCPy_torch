@@ -38,15 +38,7 @@ dev_requirements = [
 ]
 
 requirements = [
-    "scikit-image",
     "torch",
-    "tqdm",
-    "aicsimageio",
-    "antspyx",
-    "SimpleITK",
-    "opencv-python",
-    "colour",
-    "open3d",
 ]
 
 extra_requirements = {
@@ -71,11 +63,10 @@ setup(
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
     ],
-    description="A fusion algorithm in LSFM",
+    description="A python package for background and shading correction of optical microscopy images",
     entry_points={
         "console_scripts": [
-            "fuse_illu=FUSE.bin.run_fuse_illu:main",
-            "fuse_det=FUSE.bin.run_fuse_det:main",
+            "basicpy=basicpy.bin.run_basicpy:main",
         ],
     },
     install_requires=requirements,
@@ -83,15 +74,15 @@ setup(
     long_description=readme,
     long_description_content_type="text/markdown",
     include_package_data=True,
-    keywords="lsfm_fusion",
-    name="FUSE",
+    keywords="background shading flatfield darkfield biology optical microscopy image illumination",
+    name="BaSiCPy",
     packages=find_packages(exclude=["tests", "*.tests", "*.tests.*"]),
     python_requires=">=3.9",
     setup_requires=setup_requirements,
-    test_suite="lsfm_fuse/tests",
+    test_suite="basicpy/tests",
     tests_require=test_requirements,
     extras_require=extra_requirements,
-    url="https://github.com/peng-lab/LSFM-fusion",
+    url="https://github.com/yuliu96/BaSiCPy_torch",
     # Do not edit this string manually, always use bumpversion
     # Details in CONTRIBUTING.rst
     version="0.0.1",
