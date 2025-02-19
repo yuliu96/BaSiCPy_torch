@@ -39,6 +39,7 @@ dev_requirements = [
 
 requirements = [
     "torch",
+    "pydantic>=2.0.0",
 ]
 
 extra_requirements = {
