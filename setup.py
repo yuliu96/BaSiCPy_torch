@@ -43,6 +43,7 @@ requirements = [
     "dask",
     "torch-dct",
     "tqdm",
+    "hyperactive",
 ]
 
 extra_requirements = {

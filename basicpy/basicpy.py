@@ -784,7 +784,7 @@ class BaSiC(BaseModel):
                     return np.inf
                 vmin_new = torch.quantile(transformed, histogram_qmin) * vmin_factor
                 if np.allclose(basic.flatfield, np.ones_like(basic.flatfield)):
-                    return np.inf  # discard the case where flatfield is all ones
+                    return -np.inf  # discard the case where flatfield is all ones
 
                 r = autotune_cost(
                     transformed,
