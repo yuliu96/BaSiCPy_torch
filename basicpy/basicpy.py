@@ -15,11 +15,20 @@ import copy
 
 from basicpy._torch_routines import ApproximateFit
 from basicpy.metrics import autotune_cost
+from basicpy.metrics_numpy import autotune_cost_numpy
 import tqdm
+
+from hyperactive import Hyperactive
+from hyperactive.optimizers import HillClimbingOptimizer
+from pathlib import Path
+import json
 
 
 # initialize logger with the package name
 logger = logging.getLogger(__name__)
+
+_SETTINGS_FNAME = "settings.json"
+_PROFILES_FNAME = "profiles.npz"
 
 
 class BaSiC(BaseModel):
@@ -102,8 +111,8 @@ class BaSiC(BaseModel):
         description="Size for running computations. None means no rescaling.",
     )
     device: str = Field(
-        None,
-        description="Must be one of ['cpu', 'cuda']",
+        "none",
+        description="Must be one of ['cpu', 'cuda', 'none']",
     )
 
     # Private attributes for internal processing
@@ -273,8 +282,8 @@ class BaSiC(BaseModel):
 
         Im = self._resize_to_working_size(images)
 
-        if self.device == None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if self.device == "none":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
         if isinstance(Im, np.ndarray):
             Im = torch.from_numpy(Im.astype(np.float32)).to(self.device)
@@ -784,7 +793,7 @@ class BaSiC(BaseModel):
                     return np.inf
                 vmin_new = torch.quantile(transformed, histogram_qmin) * vmin_factor
                 if np.allclose(basic.flatfield, np.ones_like(basic.flatfield)):
-                    return -np.inf  # discard the case where flatfield is all ones
+                    return np.inf  # discard the case where flatfield is all ones
 
                 r = autotune_cost(
                     transformed,
@@ -878,3 +887,262 @@ class BaSiC(BaseModel):
             print("Autotune is done.")
             print("Best smoothness_flatfield = {}.".format(self.smoothness_flatfield))
             print("Best smoothness_darkfield = {}.".format(self.smoothness_darkfield))
+
+    def autotune_hillclimbing(
+        self,
+        images: np.ndarray,
+        fitting_weight: Optional[np.ndarray] = None,
+        skip_shape_warning: bool = False,
+        *,
+        optmizer=None,
+        n_iter=100,
+        search_space=None,
+        init_params=None,
+        timelapse: bool = False,
+        histogram_qmin: float = 0.01,
+        histogram_qmax: float = 0.99,
+        vmin_factor: float = 0.6,
+        vrange_factor: float = 1.5,
+        histogram_bins: int = 1000,
+        histogram_use_fitting_weight: bool = True,
+        fourier_l0_norm_image_threshold: float = 0.1,
+        fourier_l0_norm_fourier_radius=10,
+        fourier_l0_norm_threshold=0.0,
+        fourier_l0_norm_cost_coef=30,
+        early_stop: bool = True,
+        early_stop_n_iter_no_change: int = 15,
+        early_stop_torelance: float = 1e-6,
+        random_state: Optional[int] = None,
+    ) -> None:
+        """Automatically tune the parameters of the model.
+
+        Args:
+            images: input images to fit and correct. See `fit`.
+            fitting_weight: Relative fitting weight for each pixel. See `fit`.
+            skip_shape_warning: if True, warning for last dimension
+                    less than 10 is suppressed.
+            optimizer: optimizer to use. Defaults to
+                    `hyperactive.optimizers.HillClimbingOptimizer`.
+            n_iter: number of iterations for the optimizer. Defaults to 100.
+            search_space: search space for the optimizer.
+                    Defaults to a reasonable range for each parameter.
+            init_params: initial parameters for the optimizer.
+                    Defaults to a reasonable initial value for each parameter.
+            timelapse: if True, corrects the timelapse/photobleaching offsets.
+            histogram_qmin: the minimum quantile to use for the histogram.
+                    Defaults to 0.01.
+            histogram_qmax: the maximum quantile to use for the histogram.
+                    Defaults to 0.99.
+            histogram_bins: the number of bins to use for the histogram.
+                    Defaults to 100.
+            hisogram_use_fitting_weight: if True, uses the weight for the histogram.
+                    Defaults to True.
+            fourier_l0_norm_image_threshold : float
+                The threshold for image values for the fourier L0 norm calculation.
+            fourier_l0_norm_fourier_radius : float
+                The Fourier radius for the fourier L0 norm calculation.
+            fourier_l0_norm_threshold : float
+                The maximum preferred value for the fourier L0 norm.
+            fourier_l0_norm_cost_coef : float
+                The cost coefficient for the fourier L0 norm.
+            early_stop: if True, stops the optimization when the change in
+                    entropy is less than `early_stop_torelance`.
+                    Defaults to True.
+            early_stop_n_iter_no_change: the number of iterations for early
+                    stopping. Defaults to 10.
+            early_stop_torelance: the absolute value torelance
+                    for early stopping.
+            random_state: random state for the optimizer.
+
+        """
+
+        if search_space is None:
+            search_space = {
+                "smoothness_flatfield": list(np.logspace(-3, 1, 15)),
+            }
+            if self.get_darkfield:
+                search_space.update(
+                    {
+                        "smoothness_darkfield": [0] + list(np.logspace(-3, 1, 15)),
+                        "sparse_cost_darkfield": [0] + list(np.logspace(-3, 1, 15)),
+                    }
+                )
+
+        if init_params is None:
+            init_params = {
+                "smoothness_flatfield": 0.1,
+            }
+            if self.get_darkfield:
+                init_params.update(
+                    {
+                        "smoothness_darkfield": 1e-3,
+                        "sparse_cost_darkfield": 1e-3,
+                    }
+                )
+
+        # calculate the histogram range
+        device = images.device
+        if isinstance(images, torch.Tensor):
+            images_numpy = images.cpu().numpy()
+        basic = self.model_copy(update=init_params)
+        basic.fit(
+            images,
+            fitting_weight=fitting_weight,
+            skip_shape_warning=skip_shape_warning,
+        )
+        transformed = basic.transform(images_numpy, timelapse=timelapse)
+
+        vmin, vmax = np.quantile(transformed, [histogram_qmin, histogram_qmax])
+
+        val_range = (
+            vmax - vmin * vmin_factor
+        ) * vrange_factor  # fix the value range for histogram
+
+        if fitting_weight is None or not histogram_use_fitting_weight:
+            weights = None
+        else:
+            weights = fitting_weight
+
+        def fit_and_calc_entropy(params):
+            try:
+                basic = self.model_copy(update=params)
+                basic.fit(
+                    images,
+                    fitting_weight=fitting_weight,
+                    skip_shape_warning=skip_shape_warning,
+                )
+                transformed = basic.transform(images_numpy, timelapse=timelapse)
+                vmin_new = np.quantile(transformed, histogram_qmin) * vmin_factor
+
+                if np.allclose(basic.flatfield, np.ones_like(basic.flatfield)):
+                    return -np.inf  # discard the case where flatfield is all ones
+
+                return -1.0 * autotune_cost_numpy(
+                    transformed,
+                    basic._flatfield_small.cpu().data.numpy(),
+                    entropy_vmin=vmin_new,
+                    entropy_vmax=vmin_new + val_range,
+                    histogram_bins=histogram_bins,
+                    fourier_l0_norm_cost_coef=fourier_l0_norm_cost_coef,
+                    fourier_l0_norm_image_threshold=fourier_l0_norm_image_threshold,
+                    fourier_l0_norm_fourier_radius=fourier_l0_norm_fourier_radius,
+                    fourier_l0_norm_threshold=fourier_l0_norm_threshold,
+                    weights=weights,
+                )
+            except RuntimeError:
+                return -np.inf
+
+        if optmizer is None:
+            optimizer = HillClimbingOptimizer(
+                epsilon=0.1,
+                distribution="laplace",
+                n_neighbours=4,
+                rand_rest_p=0.1,
+            )
+
+        hyper = Hyperactive()
+
+        params = dict(
+            optimizer=optimizer,
+            n_iter=n_iter,
+            initialize=dict(warm_start=[init_params]),
+            random_state=random_state,
+        )
+
+        if early_stop:
+            params.update(
+                dict(
+                    early_stopping=dict(
+                        n_iter_no_change=early_stop_n_iter_no_change,
+                        tol_abs=early_stop_torelance,
+                    )
+                )
+            )
+
+        hyper.add_search(
+            fit_and_calc_entropy,
+            search_space,
+            **params,
+        )
+        hyper.run()
+        best_params = hyper.best_para(fit_and_calc_entropy)
+
+        print("Autotune is done.")
+        for key, value in best_params.items():
+            print(f"Best {key}: {value}")
+
+        self.__dict__.update(best_params)
+
+    @property
+    def score(self):
+        """The BaSiC fit final score."""
+        return self._score
+
+    @property
+    def reweight_score(self):
+        """The BaSiC fit final reweighting score."""
+        return self._reweight_score
+
+    @property
+    def settings(self) -> Dict:
+        """Current settings.
+
+        Returns:
+            current settings
+        """
+        return self.model_dump()
+
+    def save_model(self, model_dir: Union[str, Path], overwrite: bool = False) -> None:
+        """Save current model to folder.
+
+        Args:
+            model_dir: path to model directory
+
+        Raises:
+            FileExistsError: if model directory already exists
+        """
+        path = Path(model_dir)
+
+        try:
+            path.mkdir()
+        except FileExistsError:
+            if not overwrite:
+                raise FileExistsError("Model folder already exists.")
+
+        # save settings
+        with open(path / _SETTINGS_FNAME, "w") as fp:
+            # see pydantic docs for output options
+            fp.write(self.json())
+
+        # NOTE emit warning if profiles are all zeros? fit probably not run
+        # save profiles
+        np.savez(
+            path / _PROFILES_FNAME,
+            flatfield=np.array(self.flatfield),
+            darkfield=np.array(self.darkfield),
+            baseline=np.array(self.baseline),
+        )
+
+    @classmethod
+    def load_model(
+        cls,
+        model_dir: Union[str, Path],
+    ) -> BaSiC:
+        """Create a new instance from a model folder."""
+        path = Path(model_dir)
+
+        if not path.exists():
+            raise FileNotFoundError("Model directory not found.")
+
+        with open(path / _SETTINGS_FNAME) as fp:
+            model = json.load(fp)
+
+        profiles = np.load(
+            path / _PROFILES_FNAME,
+            allow_pickle=True,
+        )
+        model["flatfield"] = profiles["flatfield"]
+        model["darkfield"] = profiles["darkfield"]
+        model["baseline"] = profiles["baseline"]
+
+        return BaSiC(**model)
