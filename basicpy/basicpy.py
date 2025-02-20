@@ -13,6 +13,9 @@ import time
 import torch_dct as dct
 import copy
 
+from basicpy._torch_routines import ApproximateFit
+from basicpy.metrics import autotune_cost
+
 
 # initialize logger with the package name
 logger = logging.getLogger(__name__)
@@ -136,16 +139,23 @@ class BaSiC(BaseModel):
     def __call__(
         self,
         images: Union[np.ndarray, da.core.Array, torch.Tensor],
+        fitting_weight: Optional[Union[np.ndarray, torch.Tensor, da.core.Array]] = None,
+        skip_shape_warning=False,
         timelapse: bool = False,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         """Shortcut for `BaSiC.fit_transform`."""
-        return self.fit_transform(images, timelapse)
+        return self.fit_transform(
+            images,
+            fitting_weight,
+            skip_shape_warning,
+            timelapse,
+        )
 
     def _resize(self, Im, target_shape):
         if isinstance(Im, np.ndarray):
             Im2 = skimage_resize(
                 Im,
-                [1, 1] + target_shape,
+                target_shape,
                 preserve_range=True,
                 order=1,
                 mode="edge",
@@ -319,12 +329,18 @@ class BaSiC(BaseModel):
             init_mu = self.mu_coef / spectral_norm
         else:
             init_mu = self.mu_coef / spectral_norm / np.prod(Im2.shape)
-        fit_params = self.model_dump()
+        fit_params = {}
         fit_params.update(
             dict(
+                epsilon=self.epsilon,
                 smoothness_flatfield=self._smoothness_flatfield,
                 smoothness_darkfield=self._smoothness_darkfield,
                 sparse_cost_darkfield=self._sparse_cost_darkfield,
+                rho=self.rho,
+                optimization_tol=self.optimization_tol,
+                optimization_tol_diff=self.optimization_tol_diff,
+                get_darkfield=self.get_darkfield,
+                max_iterations=self.max_iterations,
                 init_mu=init_mu,
                 max_mu=init_mu * self.max_mu_coef,
                 D_Z_max=torch.min(Im2),
@@ -349,9 +365,9 @@ class BaSiC(BaseModel):
         B = None
 
         if self.fitting_mode == "ladmap":
-            fitting_step = LadmapFit(**fit_params)
+            fitting_step = LadmapFit(**fit_params).to(self.device)
         else:
-            fitting_step = ApproximateFit(**fit_params)
+            fitting_step = ApproximateFit(**fit_params).to(self.device)
 
         for i in range(self.max_reweight_iterations):
             logger.debug(f"reweighting iteration {i}")
@@ -359,7 +375,7 @@ class BaSiC(BaseModel):
                 S = torch.ones(Im2.shape[1:], dtype=torch.float32, device=self.device)
             else:
                 S = torch.median(Im2, dim=0)
-            S_hat = dct.dct_2d(S)
+            S_hat = dct.dct_2d(S, norm="ortho")
             D_R = torch.zeros(Im2.shape[1:], dtype=torch.float32, device=self.device)
             D_Z = 0.0
             if self.fitting_mode == "approximate":
@@ -372,3 +388,492 @@ class BaSiC(BaseModel):
 
             I_R = torch.zeros(Im2.shape, dtype=torch.float32, device=self.device)
             I_B = (S * B[:, None, None])[:, None, ...] + D_R[None, ...]
+
+            S, S_hat, D_R, D_Z, I_B, I_R, B, norm_ratio, converged = fitting_step.fit(
+                Im2,
+                W,
+                W_D,
+                S,
+                S_hat,
+                D_R,
+                D_Z,
+                B,
+                I_B,
+                I_R,
+            )
+
+            D_R = D_R + D_Z * S
+            S = I_B.mean(dim=0) - D_R
+            S = S / torch.mean(S)  # flatfields
+            logger.debug(f"single-step optimization score: {norm_ratio}.")
+            logger.debug(f"mean of S: {float(torch.mean(S))}.")
+            self._score = norm_ratio
+            if not converged:
+                logger.debug("single-step optimization did not converge.")
+            if S.max() == 0:
+                logger.error(
+                    "Estimated flatfield is zero. "
+                    + "Please try to decrease smoothness_darkfield."
+                )
+                raise RuntimeError(
+                    "Estimated flatfield is zero. "
+                    + "Please try to decrease smoothness_darkfield."
+                )
+            self._S = S
+            self._D_R = D_R
+            self._B = B
+            self._D_Z = D_Z
+
+            D = fitting_step.calc_darkfield(S, D_R, D_Z)  # darkfield
+            W = fitting_step.calc_weights(
+                I_B,
+                I_R,
+                Ws2,
+                self.epsilon,
+            )
+            W_D = fitting_step.calc_dark_weights(D_R)
+
+            self._weight = W
+            self._weight_dark = W_D
+            self._residual = I_R
+
+            logger.debug(f"Iteration {i} finished.")
+
+            if last_S is not None:
+                mad_flatfield = torch.sum(torch.abs(S - last_S)) / torch.sum(
+                    torch.abs(last_S)
+                )
+                temp_diff = torch.sum(torch.abs(S - last_S))
+                if temp_diff < 1e-7:
+                    mad_darkfield = 0
+                else:
+                    mad_darkfield = temp_diff / (
+                        max(torch.sum(torch.abs(last_S)), 1e-6)
+                    )
+                self._reweight_score = max(mad_flatfield, mad_darkfield)
+                logger.debug(f"reweighting score: {self._reweight_score}")
+                logger.info(
+                    f"Iteration {i} elapsed time: "
+                    + f"{time.monotonic() - start_time} seconds"
+                )
+
+                if self._reweight_score <= self.reweighting_tol:
+                    logger.info("Reweighting converged.")
+                    break
+            self._converge_flag = 1
+            if i == self.max_reweight_iterations - 1:
+                self._converge_flag = 0
+                if not for_autotune:
+                    logger.warning("Reweighting did not converge.")
+            last_S = S
+            last_D = D
+
+        if not converged:
+            logger.warning(
+                "Single-step optimization did not converge "
+                + "at the last reweighting step."
+            )
+
+        assert S is not None
+        assert D is not None
+        assert B is not None
+
+        if self.sort_intensity:
+            for i in range(self.max_reweight_iterations_baseline):
+                B = torch.ones(Im.shape[0], dtype=torch.float32, device=self.device)
+                if self.fitting_mode == "approximate":
+                    B = torch.mean(Im, dim=(1, 2, 3))
+                I_R = torch.zeros(Im.shape, dtype=torch.float32, device=self.device)
+                logger.debug(f"reweighting iteration for baseline {i}")
+                I_R, B, norm_ratio, converged = fitting_step.fit_baseline(
+                    Im,
+                    W,
+                    S,
+                    D,
+                    B,
+                    I_R,
+                )
+
+                I_B = B[:, None, None, None] * S[None, ...] + D[None, ...]
+                W = fitting_step.calc_weights_baseline(I_B, I_R) * Ws
+                self._weight = W
+                self._residual = I_R
+                logger.debug(f"Iteration {i} finished.")
+
+        self._flatfield_small = S
+        self._darkfield_small = D
+
+        self.flatfield = F.interpolate(
+            S[None],
+            images.shape[-2:],
+            mode="bilinear",
+            align_corners=True,
+        )[0]
+        self.darkfield = F.interpolate(
+            D[None],
+            images.shape[-2:],
+            mode="bilinear",
+            align_corners=True,
+        )[0]
+        if ndim == 3:
+            self.flatfield = self.flatfield[0]
+            self.darkfield = self.darkfield[0]
+            self._flatfield_small = self._flatfield_small[0]
+            self._darkfield_small = self._darkfield_small[0]
+        self.baseline = B
+
+        self.flatfield = self.flatfield.cpu().numpy()
+        self.darkfield = self.darkfield.cpu().numpy()
+        self.baseline = self.baseline.cpu().numpy()
+
+        logger.info(
+            f"=== BaSiC fit finished in {time.monotonic()-start_time} seconds ==="
+        )
+
+    def transform(
+        self,
+        images: Union[np.ndarray, torch.Tensor, da.core.Array],
+        timelapse: Union[bool, str] = False,
+        frames: Optional[Sequence[Union[int, np.int_]]] = None,
+    ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
+        """Apply profile to images.
+
+        Args:
+            images: input images to correct. See `fit`.
+            timelapse: If `True`, corrects the timelapse/photobleaching offsets,
+                       assuming that the residual is the product of flatfield and
+                       the object fluorescence. Also accepts "multiplicative"
+                       (the same as `True`) or "additive" (residual is the object
+                       fluorescence).
+            frames: Frames to use for transformation. Defaults to None (all frames).
+
+        Returns:
+            corrected images
+
+        Example:
+            >>> basic.fit(images)
+            >>> corrected = basic.transform(images)
+        """
+        if self.baseline is None:
+            raise RuntimeError("BaSiC object is not initialized")
+
+        logger.info("=== BaSiC transform started ===")
+        start_time = time.monotonic()
+
+        # Convert to the correct format
+        if isinstance(images, torch.Tensor):
+            baseline = torch.from_numpy(self.baseline).to(images.device)
+            flatfield = torch.from_numpy(self.flatfield).to(images.device)
+            darkfield = torch.from_numpy(self.darkfield).to(images.device)
+            im_float = images.to(torch.float)
+        elif isinstance(images, np.ndarray):
+            baseline = self.baseline
+            flatfield = self.flatfield
+            darkfield = self.darkfield
+            im_float = images.astype(np.float32)
+        elif isinstance(images, da.core.Array):
+            baseline = self.baseline
+            flatfield = self.flatfield
+            darkfield = self.darkfield
+            im_float = images.astype(np.float32)
+        else:
+            raise ValueError(
+                "Input must be either numpy.ndarray, dask.core.Array, or torch.Tensor."
+            )
+
+        if timelapse:
+            if timelapse is True:
+                timelapse = "multiplicative"
+            if frames is None:
+                _frames = slice(None)
+            else:
+                _frames = np.array(frames)
+            baseline_inds = tuple([_frames] + ([None] * (im_float.ndim - 1)))
+            if timelapse == "multiplicative":
+                output = (im_float - darkfield[None]) / flatfield[None] - baseline[
+                    baseline_inds
+                ]
+            elif timelapse == "additive":
+                baseline_flatfield = flatfield[None] * baseline[baseline_inds]
+                output = im_float - darkfield[None] - baseline_flatfield
+            else:
+                raise ValueError(
+                    "timelapse value must be bool, 'multiplicative' or 'additive'"
+                )
+        else:
+            output = (im_float - darkfield[None]) / flatfield[None]
+        logger.info(
+            f"=== BaSiC transform finished in {time.monotonic()-start_time} seconds ==="
+        )
+        return output
+
+    def fit_transform(
+        self,
+        images: Union[np.ndarray, da.core.Array, torch.Tensor],
+        fitting_weight: Optional[Union[np.ndarray, torch.Tensor, da.core.Array]] = None,
+        skip_shape_warning=False,
+        timelapse: bool = False,
+    ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
+        """Fit and transform on data.
+
+        Args:
+            images: input images to fit and correct. See `fit`.
+
+        Returns:
+            corrected images
+
+        Example:
+            >>> corrected = basic.fit_transform(images)
+        """
+        self.fit(
+            images,
+            fitting_weight=fitting_weight,
+            skip_shape_warning=skip_shape_warning,
+        )
+        corrected = self.transform(images, timelapse)
+
+        return corrected
+
+    def autotune(
+        self,
+        images: np.ndarray,
+        fitting_weight: Optional[np.ndarray] = None,
+        skip_shape_warning: bool = False,
+        optmizer=None,
+        n_iter=100,
+        search_space_flatfield=None,
+        search_space_darkfield=None,
+        init_params=None,
+        timelapse: bool = False,
+        histogram_qmin: float = 0.01,
+        histogram_qmax: float = 0.99,
+        vmin_factor: float = 0.6,
+        vrange_factor: float = 1.5,
+        histogram_bins: int = 1000,
+        histogram_use_fitting_weight: bool = True,
+        fourier_l0_norm_image_threshold: float = 0.1,
+        fourier_l0_norm_fourier_radius=10,
+        fourier_l0_norm_threshold=0.0,
+        fourier_l0_norm_cost_coef=30,
+        early_stop: bool = True,
+        early_stop_n_iter_no_change: int = 15,
+        early_stop_torelance: float = 1e-6,
+        random_state: Optional[int] = None,
+    ) -> None:
+        """Automatically tune the parameters of the model.
+
+        Args:
+            images: input images to fit and correct. See `fit`.
+            fitting_weight: Relative fitting weight for each pixel. See `fit`.
+            skip_shape_warning: if True, warning for last dimension
+                    less than 10 is suppressed.
+            optimizer: optimizer to use. Defaults to
+                    `hyperactive.optimizers.HillClimbingOptimizer`.
+            n_iter: number of iterations for the optimizer. Defaults to 100.
+            search_space: search space for the optimizer.
+                    Defaults to a reasonable range for each parameter.
+            init_params: initial parameters for the optimizer.
+                    Defaults to a reasonable initial value for each parameter.
+            timelapse: if True, corrects the timelapse/photobleaching offsets.
+            histogram_qmin: the minimum quantile to use for the histogram.
+                    Defaults to 0.01.
+            histogram_qmax: the maximum quantile to use for the histogram.
+                    Defaults to 0.99.
+            histogram_bins: the number of bins to use for the histogram.
+                    Defaults to 100.
+            hisogram_use_fitting_weight: if True, uses the weight for the histogram.
+                    Defaults to True.
+            fourier_l0_norm_image_threshold : float
+                The threshold for image values for the fourier L0 norm calculation.
+            fourier_l0_norm_fourier_radius : float
+                The Fourier radius for the fourier L0 norm calculation.
+            fourier_l0_norm_threshold : float
+                The maximum preferred value for the fourier L0 norm.
+            fourier_l0_norm_cost_coef : float
+                The cost coefficient for the fourier L0 norm.
+            early_stop: if True, stops the optimization when the change in
+                    entropy is less than `early_stop_torelance`.
+                    Defaults to True.
+            early_stop_n_iter_no_change: the number of iterations for early
+                    stopping. Defaults to 10.
+            early_stop_torelance: the absolute value torelance
+                    for early stopping.
+            random_state: random state for the optimizer.
+
+        """
+        flatfield_pool = np.array(
+            [0.01, 0.1, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5, 6, 7, 8, 10]
+        )
+        flatfield_pool_coarse = np.array([0.01, 0.1, 0.5, 2, 8, 10])
+        second_flag = True
+        if search_space_flatfield is None:
+            pass
+        else:
+            search_space_flatfield = np.asarray(search_space_flatfield)
+            if min(search_space_flatfield) <= 0.01:
+                a = 0
+            else:
+                a = np.where(flatfield_pool < min(search_space_flatfield))[0][-1]
+            if max(search_space_flatfield) >= 10:
+                b = None
+            else:
+                b = np.where(flatfield_pool > max(search_space_flatfield))[0][0] + 1
+            flatfield_pool = flatfield_pool[a:b]
+            flatfield_pool_coarse = flatfield_pool_coarse[
+                (flatfield_pool_coarse >= flatfield_pool.min())
+                * (flatfield_pool_coarse <= flatfield_pool.max())
+            ]
+            flatfield_pool_coarse = np.concatenate(
+                (
+                    np.array([flatfield_pool[0]]),
+                    flatfield_pool_coarse,
+                    np.array([flatfield_pool[-1]]),
+                )
+            )
+            flatfield_pool_coarse = np.unique(flatfield_pool_coarse)
+
+        if init_params is None:
+            init_params = {
+                "smoothness_flatfield": sum(flatfield_pool) / len(flatfield_pool),
+                "get_darkfield": self.get_darkfield,
+            }
+            if self.get_darkfield:
+                init_params.update(
+                    {
+                        "smoothness_darkfield": init_params["smoothness_flatfield"]
+                        * 0.1,
+                        "sparse_cost_darkfield": 1e-3,
+                    }
+                )
+
+        device = images.device
+        basic = self.model_copy(update=init_params)
+        basic.fit(
+            images,
+            fitting_weight=fitting_weight,
+            skip_shape_warning=skip_shape_warning,
+            for_autotune=True,
+        )
+        transformed = basic.transform(images, timelapse=timelapse)
+
+        vmin, vmax = torch.quantile(
+            transformed, torch.Tensor([histogram_qmin, histogram_qmax]).to(device)
+        )
+
+        val_range = (
+            vmax - vmin * vmin_factor
+        ) * vrange_factor  # fix the value range for histogram
+
+        if fitting_weight is None or not histogram_use_fitting_weight:
+            weights = None
+        else:
+            weights = fitting_weight
+
+        def fit_and_calc_entropy(params):
+            try:
+                basic = self.model_copy(update=params)
+                basic.fit(
+                    images,
+                    fitting_weight=fitting_weight,
+                    skip_shape_warning=skip_shape_warning,
+                    for_autotune=True,
+                )
+                transformed = basic.transform(images, timelapse=timelapse)
+                if torch.isnan(transformed).sum():
+                    return np.inf
+                vmin_new = torch.quantile(transformed, histogram_qmin) * vmin_factor
+                if np.allclose(basic.flatfield, np.ones_like(basic.flatfield)):
+                    return np.inf  # discard the case where flatfield is all ones
+
+                r = autotune_cost(
+                    transformed,
+                    basic._flatfield_small,
+                    entropy_vmin=vmin_new,
+                    entropy_vmax=vmin_new + val_range,
+                    histogram_bins=histogram_bins,
+                    fourier_l0_norm_cost_coef=fourier_l0_norm_cost_coef,
+                    fourier_l0_norm_image_threshold=fourier_l0_norm_image_threshold,
+                    fourier_l0_norm_fourier_radius=fourier_l0_norm_fourier_radius,
+                    fourier_l0_norm_threshold=fourier_l0_norm_threshold,
+                    weights=weights,
+                )
+
+                return r if basic._converge_flag else np.inf
+            except RuntimeError:
+                return np.inf
+
+        cost_coarse = []
+        for i in tqdm.tqdm(flatfield_pool_coarse, desc="coarse-level search: "):
+            params = {
+                "smoothness_flatfield": i,
+                "smoothness_darkfield": i * 0.1,  # 0.1 * i if self.get_darkfield else 0
+                "get_darkfield": self.get_darkfield,
+            }
+            a = fit_and_calc_entropy(params)
+            cost_coarse.append(a)
+
+        cost_coarse = torch.stack(cost_coarse)
+
+        best_ind = torch.argmin(cost_coarse)
+        if best_ind == len(cost_coarse) - 1:
+            second_best_ind = best_ind - 1
+        elif best_ind == 0:
+            second_best_ind = 1
+        else:
+            if cost_coarse[best_ind - 1] > cost_coarse[best_ind + 1]:
+                second_best_ind = best_ind - 1
+            else:
+                second_best_ind = best_ind + 1
+        best = flatfield_pool_coarse[best_ind]
+        second_best = flatfield_pool_coarse[second_best_ind]
+
+        if second_best < best:
+            flatfield_pool_narrow = flatfield_pool[
+                (flatfield_pool >= second_best) * (flatfield_pool <= best)
+            ]
+        else:
+            flatfield_pool_narrow = flatfield_pool[
+                (flatfield_pool >= best) * (flatfield_pool <= second_best)
+            ]
+
+        if len(flatfield_pool_narrow) == 2:
+            flatfield_pool_narrow = (
+                [flatfield_pool_narrow[0]]
+                + [(flatfield_pool_narrow[0] + flatfield_pool_narrow[1]) / 2]
+                + [flatfield_pool_narrow[1]]
+            )
+
+        cost_narrow = np.zeros(len(flatfield_pool_narrow))
+        cost_narrow[0] = cost_coarse[flatfield_pool_narrow[0] == flatfield_pool_coarse][
+            0
+        ]
+        cost_narrow[-1] = cost_coarse[
+            flatfield_pool_narrow[-1] == flatfield_pool_coarse
+        ][0]
+
+        ind = 1
+        for i in tqdm.tqdm(flatfield_pool_narrow[1:-1], desc="fine-level search: "):
+            params = {
+                "smoothness_flatfield": i,
+                "smoothness_darkfield": i * 0.1,
+                "get_darkfield": self.get_darkfield,
+            }
+            a = fit_and_calc_entropy(params)
+            cost_narrow[ind] = a
+            ind += 1
+
+        self.__dict__.update(
+            {
+                "smoothness_flatfield": flatfield_pool_narrow[np.argmin(cost_narrow)],
+                "smoothness_darkfield": flatfield_pool_narrow[np.argmin(cost_narrow)]
+                * 0.1,
+            }
+        )
+
+        if not self.get_darkfield:
+            print("Autotune is done.")
+            print("Best smoothness_flatfield = {}.".format(self.smoothness_flatfield))
+        else:
+            print("Autotune is done.")
+            print("Best smoothness_flatfield = {}.".format(self.smoothness_flatfield))
+            print("Best smoothness_darkfield = {}.".format(self.smoothness_darkfield))

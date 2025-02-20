@@ -42,6 +42,7 @@ requirements = [
     "pydantic>=2.0.0",
     "dask",
     "torch-dct",
+    "tqdm",
 ]
 
 extra_requirements = {
