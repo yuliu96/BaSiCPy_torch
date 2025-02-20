@@ -1127,7 +1127,7 @@ class BaSiC(BaseModel):
     def load_model(
         cls,
         model_dir: Union[str, Path],
-    ) -> BaSiC:
+    ):
         """Create a new instance from a model folder."""
         path = Path(model_dir)
 
