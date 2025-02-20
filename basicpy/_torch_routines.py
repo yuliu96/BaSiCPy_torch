@@ -1,10 +1,8 @@
-from functools import partial
 import torch.nn as nn
 import torch
 import numpy as np
 import torch_dct as dct
-import copy
-import tqdm
+from typing import Tuple
 
 
 def _tshrinkage(x, thresh):
