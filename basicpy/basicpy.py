@@ -15,6 +15,7 @@ import copy
 
 from basicpy._torch_routines import ApproximateFit
 from basicpy.metrics import autotune_cost
+import tqdm
 
 
 # initialize logger with the package name
