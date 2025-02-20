@@ -649,10 +649,7 @@ class BaSiC(BaseModel):
         images: np.ndarray,
         fitting_weight: Optional[np.ndarray] = None,
         skip_shape_warning: bool = False,
-        optmizer=None,
-        n_iter=100,
         search_space_flatfield=None,
-        search_space_darkfield=None,
         init_params=None,
         timelapse: bool = False,
         histogram_qmin: float = 0.01,
@@ -665,10 +662,6 @@ class BaSiC(BaseModel):
         fourier_l0_norm_fourier_radius=10,
         fourier_l0_norm_threshold=0.0,
         fourier_l0_norm_cost_coef=30,
-        early_stop: bool = True,
-        early_stop_n_iter_no_change: int = 15,
-        early_stop_torelance: float = 1e-6,
-        random_state: Optional[int] = None,
     ) -> None:
         """Automatically tune the parameters of the model.
 

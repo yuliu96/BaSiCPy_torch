@@ -326,7 +326,7 @@ class ApproximateFit(BaseFit, nn.Module):
     def calc_darkfield(_self, S, D_R, D_Z):
         return D_R
 
-    def calc_weights_baseline(self, I_B, I_R):
+    def calc_weights_baseline(self, I_B, I_R, , Ws2, epsilon,):
         I_B = I_B[:, 0, ...]
         I_R = I_R[:, 0, ...]
         mean_vec = torch.mean(I_B, dim=(1, 2))
