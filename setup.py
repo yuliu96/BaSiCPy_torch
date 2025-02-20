@@ -44,6 +44,7 @@ requirements = [
     "torch-dct",
     "tqdm",
     "hyperactive",
+    "pathlib",
 ]
 
 extra_requirements = {
