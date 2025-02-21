@@ -13,7 +13,7 @@ import time
 import torch_dct as dct
 import copy
 
-from basicpy._torch_routines import ApproximateFit
+from basicpy._torch_routines import ApproximateFit, LadmapFit
 from basicpy.metrics import autotune_cost
 from basicpy.metrics_numpy import autotune_cost_numpy
 import tqdm
