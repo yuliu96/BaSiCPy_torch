@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import torch_dct as dct
 from typing import Tuple
+import math
 
 
 def _tshrinkage(x, thresh):
@@ -340,3 +341,167 @@ class ApproximateFit(BaseFit, nn.Module):
         weight = 1.0 / (torch.abs(XE_norm) + self.epsilon)
         weight = weight / torch.mean(weight)
         return weight[:, None, ...]
+
+
+class LadmapFit(BaseFit, nn.Module):
+    def __init__(self, **kwargs):
+        super(LadmapFit, self).__init__(**kwargs)
+
+    def _step(
+        self,
+        vals,
+    ):
+        k, S, S_hat, D_R, D_Z, I_B, I_R, B, Y, mu, fit_residual, value_diff = vals
+        T_max = self.Im.shape[0]
+
+        I_B = S[None, ...] * B[:, None, None, None] + D_R[None, ...] + D_Z
+        eta_S = torch.sum(B**2) * 1.02 + 0.01
+        S_new = (
+            S
+            + torch.sum(B[:, None, None, None] * (self.Im - I_B - I_R + Y / mu), dim=0)
+            / eta_S
+        )
+        S_new = dct.idct_3d(
+            _tshrinkage(
+                dct.dct_3d(S_new, norm="ortho"),
+                self.smoothness_flatfield / (eta_S * mu),
+            ),
+            norm="ortho",
+        )
+        if S_new.min() < 0:
+            S_new = S_new - S_new.min()
+        dS = S_new - S
+        S = S_new
+
+        I_B = S[None, ...] * B[:, None, None, None] + D_R[None, ...] + D_Z
+        I_R_new = _tshrinkage(self.Im - I_B + Y / mu, self.W / mu / T_max)
+        dI_R = I_R_new - I_R
+        I_R = I_R_new
+
+        R = self.Im - I_R
+        S_sq = torch.sum(S**2)
+        B_new = torch.sum(S[None, ...] * (R + Y / mu), dim=(1, 2, 3)) / S_sq
+        if S_sq <= 0:
+            B_new = B
+        B_new = torch.clip(B_new, 0)
+
+        mean_B = torch.mean(B_new)
+        if mean_B > 0:
+            B_new = B_new / mean_B
+            S = S * mean_B
+
+        dB = B_new - B
+        B = B_new
+
+        BS = S[None, ...] * B[:, None, None, None]
+
+        if self.get_darkfield:
+            D_Z_new = torch.mean(self.Im - BS - D_R[None, ...] - I_R + Y / 2.0 / mu)
+            D_Z_new = torch.clip(D_Z_new, 0, self.D_Z_max)
+            dD_Z = D_Z_new - D_Z
+            D_Z = D_Z_new
+
+            eta_D = self.Im.shape[0] * 1.02
+            D_R_new = D_R + 1.0 / eta_D * torch.sum(
+                self.Im - BS - D_R[None, ...] - D_Z - I_R + Y / mu, dim=0
+            )
+            D_R_new = dct.idct_3d(
+                _tshrinkage(dct.dct_3d(D_R_new), self.smoothness_darkfield / eta_D / mu)
+            )
+            D_R_new = _tshrinkage(
+                D_R_new, self.sparse_cost_darkfield * self.W_D / eta_D / mu
+            )
+            dD_R = D_R_new - D_R
+            D_R = D_R_new
+
+        I_B = BS + D_R[None, ...] + D_Z
+        fit_residual = R - I_B
+        Y = Y + mu * fit_residual
+
+        value_diff = max(
+            [
+                torch.linalg.norm(dS.ravel()) * torch.sqrt(eta_S),
+                torch.linalg.norm(dI_R.ravel()) * math.sqrt(1.0),
+                torch.linalg.norm(dB.ravel()),
+            ]
+        )
+
+        if self.get_darkfield:
+            value_diff = max(
+                [
+                    value_diff,
+                    torch.linalg.norm(dD_R.ravel()) * math.sqrt(eta_D),
+                    dD_Z**2,
+                ]
+            )
+
+        value_diff = value_diff / self.image_norm
+        mu = torch.minimum(mu * self.rho, self.max_mu)
+
+        return [k + 1, S, S_hat, D_R, D_Z, I_B, I_R, B, Y, mu, fit_residual, value_diff]
+
+    def _step_only_baseline(self, vals):
+        k, I_R, B, Y, mu, fit_residual, value_diff = vals
+        T_max = self.Im.shape[0]
+
+        I_B = self.S[None, ...] * B[:, None, None, None] + self.D[None, ...]
+        I_R_new = _tshrinkage(self.Im - I_B + Y / mu, self.W / mu / T_max)
+        dI_R = I_R_new - I_R
+        I_R = I_R_new
+
+        R = self.Im - I_R
+        B_new = torch.sum(self.S[None, ...] * (R + Y / mu), dim=(1, 2, 3)) / torch.sum(
+            self.S**2
+        )
+        B_new = torch.clip(B_new, 0)
+        dB = B_new - B
+        B = B_new
+
+        I_B = self.S[None, ...] * B[:, None, None, None] + self.D[None, ...]
+        fit_residual = R - I_B
+        Y = Y + mu * fit_residual
+
+        value_diff = max(
+            [
+                torch.linalg.norm(dI_R.ravel()) * math.sqrt(1.0),
+                torch.linalg.norm(dB.ravel()),
+            ]
+        )
+        value_diff = value_diff / self.image_norm
+
+        mu = torch.minimum(mu * self.rho, self.max_mu)
+
+        return (k + 1, I_R, B, Y, mu, fit_residual, value_diff)
+
+    def calc_weights(
+        self,
+        I_B,
+        I_R,
+        Ws2,
+        epsilon,
+    ):
+        Ws = torch.ones_like(I_R) / (
+            torch.abs(I_R / (I_B + self.epsilon)) + self.epsilon
+        )
+        return Ws / torch.mean(Ws)
+
+    def calc_dark_weights(self, D_R):
+        Ws = torch.ones_like(D_R) / (torch.abs(D_R) + self.epsilon)
+        return Ws / torch.mean(Ws)
+
+    def calc_weights_baseline(
+        self,
+        I_B,
+        I_R,
+        Ws2,
+        epsilon,
+    ):
+        return self.calc_weights(
+            I_B,
+            I_R,
+            Ws2,
+            epsilon,
+        )
+
+    def calc_darkfield(_self, S, D_R, D_Z):
+        return D_R + D_Z

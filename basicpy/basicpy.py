@@ -375,6 +375,11 @@ class BaSiC(BaseModel):
         B = None
 
         if self.fitting_mode == "ladmap":
+            fit_params.update(
+                dict(
+                    sparse_cost_darkfield=self.sparse_cost_darkfield,
+                )
+            )
             fitting_step = LadmapFit(**fit_params).to(self.device)
         else:
             fitting_step = ApproximateFit(**fit_params).to(self.device)
@@ -384,7 +389,7 @@ class BaSiC(BaseModel):
             if self.fitting_mode == "approximate":
                 S = torch.ones(Im2.shape[1:], dtype=torch.float32, device=self.device)
             else:
-                S = torch.median(Im2, dim=0)
+                S = torch.median(Im2, dim=0)[0]
             S_hat = dct.dct_2d(S, norm="ortho")
             D_R = torch.zeros(Im2.shape[1:], dtype=torch.float32, device=self.device)
             D_Z = 0.0
@@ -505,7 +510,7 @@ class BaSiC(BaseModel):
                 )
 
                 I_B = B[:, None, None, None] * S[None, ...] + D[None, ...]
-                W = fitting_step.calc_weights_baseline(I_B, I_R) * Ws
+                W = fitting_step.calc_weights_baseline(I_B, I_R, Ws, self.epsilon) * Ws
                 self._weight = W
                 self._residual = I_R
                 logger.debug(f"Iteration {i} finished.")
@@ -704,6 +709,12 @@ class BaSiC(BaseModel):
             random_state: random state for the optimizer.
 
         """
+        if self.fitting_mode == "ladmap":
+            print(
+                "Autotune is not applicable to LADMAP mode, please try autotune_hillclimbing instead."
+            )
+            return
+
         flatfield_pool = np.array(
             [0.01, 0.1, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5, 6, 7, 8, 10]
         )
@@ -757,6 +768,7 @@ class BaSiC(BaseModel):
             skip_shape_warning=skip_shape_warning,
             for_autotune=True,
         )
+
         transformed = basic.transform(images, timelapse=timelapse)
 
         vmin, vmax = torch.quantile(
@@ -815,7 +827,7 @@ class BaSiC(BaseModel):
             a = fit_and_calc_entropy(params)
             cost_coarse.append(a)
 
-        cost_coarse = torch.stack(cost_coarse)
+        cost_coarse = torch.tensor(cost_coarse)
 
         best_ind = torch.argmin(cost_coarse)
         if best_ind == len(cost_coarse) - 1:
@@ -977,6 +989,7 @@ class BaSiC(BaseModel):
         device = images.device
         if isinstance(images, torch.Tensor):
             images_numpy = images.cpu().numpy()
+        init_params["fitting_mode"] = "approximate"
         basic = self.model_copy(update=init_params)
         basic.fit(
             images,
@@ -995,6 +1008,8 @@ class BaSiC(BaseModel):
             weights = None
         else:
             weights = fitting_weight
+
+        init_params["fitting_mode"] = self.fitting_mode
 
         def fit_and_calc_entropy(params):
             try:
