@@ -47,7 +47,7 @@ def entropy(
         image.cpu(),
         bins,
         range=(vmin.item(), vmax.item()),
-        weight=weights,
+        weight=weights.cpu() if weights != None else None,
         density=True,
     )
 

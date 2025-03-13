@@ -162,23 +162,13 @@ class BaSiC(BaseModel):
         )
 
     def _resize(self, Im, target_shape):
-        if isinstance(Im, np.ndarray):
-            Im2 = skimage_resize(
-                Im,
-                target_shape,
-                preserve_range=True,
-                order=1,
-                mode="edge",
-                anti_aliasing=True,
-            )
-
-        elif isinstance(Im, da.core.Array):
+        if isinstance(Im, da.core.Array):
             assert np.array_equal(target_shape[:-2], Im.shape[:-2])
             Im2 = (
                 da.from_array(
                     [
                         skimage_resize(
-                            np.array(Im[tuple(inds)]),
+                            np.array(Im[tuple(inds)]) + 0.0,
                             target_shape[-2:],
                             preserve_range=True,
                             **self.resize_params,
@@ -189,15 +179,17 @@ class BaSiC(BaseModel):
                 .reshape((*Im.shape[:-2], *target_shape[-2:]))
                 .compute()
             )
-
-        elif isinstance(Im, torch.Tensor):
-            Im2 = F.interpolate(
-                Im,
-                target_shape[-2:],
-                mode="bilinear",
-                align_corners=True,
-            )
-
+        elif isinstance(Im, np.ndarray) or isinstance(Im, torch.Tensor):
+            if isinstance(Im, np.ndarray):
+                Im = torch.from_numpy(Im)
+            Im2 = torch.empty(target_shape, dtype=Im.dtype, device=self.device)
+            for i in range(Im.shape[0]):
+                Im2[i] = F.interpolate(
+                    Im[i : i + 1].to(self.device) + 0.0,
+                    target_shape[-2:],
+                    mode="bilinear",
+                    align_corners=True,
+                )
         else:
             raise ValueError(
                 "Input must be either numpy.ndarray, dask.core.Array, or torch.Tensor."
@@ -280,10 +272,14 @@ class BaSiC(BaseModel):
         logger.info("=== BaSiC fit started ===")
         start_time = time.monotonic()
 
-        Im = self._resize_to_working_size(images)
+        if isinstance(images, torch.Tensor):
+            if images.is_cuda:
+                self.device = "cuda"
 
         if self.device == "none":
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        Im = self._resize_to_working_size(images)
 
         if isinstance(Im, np.ndarray):
             Im = torch.from_numpy(Im.astype(np.float32)).to(self.device)
@@ -760,7 +756,21 @@ class BaSiC(BaseModel):
                     }
                 )
 
-        device = images.device
+        if isinstance(images, torch.Tensor):
+            device = images.device
+        else:
+            device = "cpu"
+            images = torch.from_numpy(images)
+        images = images.to(torch.float)
+        if fitting_weight is None:
+            pass
+        else:
+            if isinstance(fitting_weight, torch.Tensor):
+                pass
+            else:
+                fitting_weight = torch.from_numpy(fitting_weight)
+            fitting_weight = fitting_weight.to(device)
+
         basic = self.model_copy(update=init_params)
         basic.fit(
             images,
@@ -782,40 +792,40 @@ class BaSiC(BaseModel):
         if fitting_weight is None or not histogram_use_fitting_weight:
             weights = None
         else:
-            weights = fitting_weight
+            weights = fitting_weight.to(images.dtype)
 
         def fit_and_calc_entropy(params):
-            try:
-                basic = self.model_copy(update=params)
-                basic.fit(
-                    images,
-                    fitting_weight=fitting_weight,
-                    skip_shape_warning=skip_shape_warning,
-                    for_autotune=True,
-                )
-                transformed = basic.transform(images, timelapse=timelapse)
-                if torch.isnan(transformed).sum():
-                    return np.inf
-                vmin_new = torch.quantile(transformed, histogram_qmin) * vmin_factor
-                if np.allclose(basic.flatfield, np.ones_like(basic.flatfield)):
-                    return np.inf  # discard the case where flatfield is all ones
-
-                r = autotune_cost(
-                    transformed,
-                    basic._flatfield_small,
-                    entropy_vmin=vmin_new,
-                    entropy_vmax=vmin_new + val_range,
-                    histogram_bins=histogram_bins,
-                    fourier_l0_norm_cost_coef=fourier_l0_norm_cost_coef,
-                    fourier_l0_norm_image_threshold=fourier_l0_norm_image_threshold,
-                    fourier_l0_norm_fourier_radius=fourier_l0_norm_fourier_radius,
-                    fourier_l0_norm_threshold=fourier_l0_norm_threshold,
-                    weights=weights,
-                )
-
-                return r if basic._converge_flag else np.inf
-            except RuntimeError:
+            # try:
+            basic = self.model_copy(update=params)
+            basic.fit(
+                images,
+                fitting_weight=fitting_weight,
+                skip_shape_warning=skip_shape_warning,
+                for_autotune=True,
+            )
+            transformed = basic.transform(images, timelapse=timelapse)
+            if torch.isnan(transformed).sum():
                 return np.inf
+            vmin_new = torch.quantile(transformed, histogram_qmin) * vmin_factor
+            if np.allclose(basic.flatfield, np.ones_like(basic.flatfield)):
+                return np.inf  # discard the case where flatfield is all ones
+
+            r = autotune_cost(
+                transformed,
+                basic._flatfield_small,
+                entropy_vmin=vmin_new,
+                entropy_vmax=vmin_new + val_range,
+                histogram_bins=histogram_bins,
+                fourier_l0_norm_cost_coef=fourier_l0_norm_cost_coef,
+                fourier_l0_norm_image_threshold=fourier_l0_norm_image_threshold,
+                fourier_l0_norm_fourier_radius=fourier_l0_norm_fourier_radius,
+                fourier_l0_norm_threshold=fourier_l0_norm_threshold,
+                weights=weights,
+            )
+
+            return r if basic._converge_flag else np.inf
+            # except RuntimeError:
+            #     return np.inf
 
         cost_coarse = []
         for i in tqdm.tqdm(flatfield_pool_coarse, desc="coarse-level search: "):
@@ -886,7 +896,7 @@ class BaSiC(BaseModel):
         )
 
         if not self.get_darkfield:
-            print("Autotune is done.")
+            print("\nAutotune is done.")
             print("Best smoothness_flatfield = {}.".format(self.smoothness_flatfield))
         else:
             print("Autotune is done.")
@@ -1120,7 +1130,7 @@ class BaSiC(BaseModel):
         # save settings
         with open(path / _SETTINGS_FNAME, "w") as fp:
             # see pydantic docs for output options
-            fp.write(self.json())
+            fp.write(self.model_dump_json())
 
         # NOTE emit warning if profiles are all zeros? fit probably not run
         # save profiles
