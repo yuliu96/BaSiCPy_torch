@@ -130,7 +130,6 @@ class BaSiC(BaseModel):
     _sparse_cost_darkfield: float = PrivateAttr(None)
     _flatfield_small: float = PrivateAttr(None)
     _darkfield_small: float = PrivateAttr(None)
-    _converge_flag: bool = PrivateAttr(None)
 
     class Config:
         """Pydantic class configuration."""
@@ -471,19 +470,12 @@ class BaSiC(BaseModel):
                 if self._reweight_score <= self.reweighting_tol:
                     logger.info("Reweighting converged.")
                     break
-            self._converge_flag = 1
-            if i == self.max_reweight_iterations - 1:
-                self._converge_flag = 0
-                if not for_autotune:
-                    logger.warning("Reweighting did not converge.")
             last_S = S
             last_D = D
 
-        if not converged:
-            logger.warning(
-                "Single-step optimization did not converge "
-                + "at the last reweighting step."
-            )
+        if (i == self.max_reweight_iterations - 1) and (not converged):
+            if not for_autotune:
+                logger.warning("Reweighting did not converge.")
 
         assert S is not None
         assert D is not None
