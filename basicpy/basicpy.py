@@ -151,14 +151,14 @@ class BaSiC(BaseModel):
         images: Union[np.ndarray, da.core.Array, torch.Tensor],
         fitting_weight: Optional[Union[np.ndarray, torch.Tensor, da.core.Array]] = None,
         skip_shape_warning=False,
-        timelapse: bool = False,
+        is_timelapse: bool = False,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         """Shortcut for `BaSiC.fit_transform`."""
         return self.fit_transform(
             images,
             fitting_weight,
             skip_shape_warning,
-            timelapse,
+            is_timelapse,
         )
 
     def _resize(self, Im, target_shape):
@@ -540,14 +540,14 @@ class BaSiC(BaseModel):
     def transform(
         self,
         images: Union[np.ndarray, torch.Tensor, da.core.Array],
-        timelapse: Union[bool, str] = False,
+        is_timelapse: Union[bool, str] = False,
         frames: Optional[Sequence[Union[int, np.int_]]] = None,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         """Apply profile to images.
 
         Args:
             images: input images to correct. See `fit`.
-            timelapse: If `True`, corrects the timelapse/photobleaching offsets,
+            is_timelapse: If `True`, corrects the timelapse/photobleaching offsets,
                        assuming that the residual is the product of flatfield and
                        the object fluorescence. Also accepts "multiplicative"
                        (the same as `True`) or "additive" (residual is the object
@@ -588,24 +588,24 @@ class BaSiC(BaseModel):
                 "Input must be either numpy.ndarray, dask.core.Array, or torch.Tensor."
             )
 
-        if timelapse:
-            if timelapse is True:
-                timelapse = "multiplicative"
+        if is_timelapse:
+            if is_timelapse is True:
+                is_timelapse = "multiplicative"
             if frames is None:
                 _frames = slice(None)
             else:
                 _frames = np.array(frames)
             baseline_inds = tuple([_frames] + ([None] * (im_float.ndim - 1)))
-            if timelapse == "multiplicative":
+            if is_timelapse == "multiplicative":
                 output = (im_float - darkfield[None]) / flatfield[None] - baseline[
                     baseline_inds
                 ]
-            elif timelapse == "additive":
+            elif is_timelapse == "additive":
                 baseline_flatfield = flatfield[None] * baseline[baseline_inds]
                 output = im_float - darkfield[None] - baseline_flatfield
             else:
                 raise ValueError(
-                    "timelapse value must be bool, 'multiplicative' or 'additive'"
+                    "is_timelapse value must be bool, 'multiplicative' or 'additive'"
                 )
         else:
             output = (im_float - darkfield[None]) / flatfield[None]
@@ -619,7 +619,7 @@ class BaSiC(BaseModel):
         images: Union[np.ndarray, da.core.Array, torch.Tensor],
         fitting_weight: Optional[Union[np.ndarray, torch.Tensor, da.core.Array]] = None,
         skip_shape_warning=False,
-        timelapse: bool = False,
+        is_timelapse: bool = False,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         """Fit and transform on data.
 
@@ -637,7 +637,7 @@ class BaSiC(BaseModel):
             fitting_weight=fitting_weight,
             skip_shape_warning=skip_shape_warning,
         )
-        corrected = self.transform(images, timelapse)
+        corrected = self.transform(images, is_timelapse)
 
         return corrected
 
@@ -648,7 +648,7 @@ class BaSiC(BaseModel):
         skip_shape_warning: bool = False,
         search_space_flatfield=None,
         init_params=None,
-        timelapse: bool = False,
+        is_timelapse: bool = False,
         histogram_qmin: float = 0.01,
         histogram_qmax: float = 0.99,
         vmin_factor: float = 0.6,
@@ -674,7 +674,7 @@ class BaSiC(BaseModel):
                     Defaults to a reasonable range for each parameter.
             init_params: initial parameters for the optimizer.
                     Defaults to a reasonable initial value for each parameter.
-            timelapse: if True, corrects the timelapse/photobleaching offsets.
+            is_timelapse: if True, corrects the timelapse/photobleaching offsets.
             histogram_qmin: the minimum quantile to use for the histogram.
                     Defaults to 0.01.
             histogram_qmax: the maximum quantile to use for the histogram.
@@ -775,7 +775,7 @@ class BaSiC(BaseModel):
             for_autotune=True,
         )
 
-        transformed = basic.transform(images, timelapse=timelapse)
+        transformed = basic.transform(images, is_timelapse=is_timelapse)
 
         vmin, vmax = torch.quantile(
             transformed, torch.Tensor([histogram_qmin, histogram_qmax]).to(device)
@@ -799,7 +799,7 @@ class BaSiC(BaseModel):
                 skip_shape_warning=skip_shape_warning,
                 for_autotune=True,
             )
-            transformed = basic.transform(images, timelapse=timelapse)
+            transformed = basic.transform(images, is_timelapse=is_timelapse)
             if torch.isnan(transformed).sum():
                 return np.inf
             vmin_new = torch.quantile(transformed, histogram_qmin) * vmin_factor
@@ -909,7 +909,7 @@ class BaSiC(BaseModel):
         n_iter=100,
         search_space=None,
         init_params=None,
-        timelapse: bool = False,
+        is_timelapse: bool = False,
         histogram_qmin: float = 0.01,
         histogram_qmax: float = 0.99,
         vmin_factor: float = 0.6,
@@ -939,7 +939,7 @@ class BaSiC(BaseModel):
                     Defaults to a reasonable range for each parameter.
             init_params: initial parameters for the optimizer.
                     Defaults to a reasonable initial value for each parameter.
-            timelapse: if True, corrects the timelapse/photobleaching offsets.
+            is_timelapse: if True, corrects the timelapse/photobleaching offsets.
             histogram_qmin: the minimum quantile to use for the histogram.
                     Defaults to 0.01.
             histogram_qmax: the maximum quantile to use for the histogram.
@@ -1002,7 +1002,7 @@ class BaSiC(BaseModel):
             fitting_weight=fitting_weight,
             skip_shape_warning=skip_shape_warning,
         )
-        transformed = basic.transform(images_numpy, timelapse=timelapse)
+        transformed = basic.transform(images_numpy, is_timelapse=is_timelapse)
 
         vmin, vmax = np.quantile(transformed, [histogram_qmin, histogram_qmax])
 
@@ -1025,7 +1025,7 @@ class BaSiC(BaseModel):
                     fitting_weight=fitting_weight,
                     skip_shape_warning=skip_shape_warning,
                 )
-                transformed = basic.transform(images_numpy, timelapse=timelapse)
+                transformed = basic.transform(images_numpy, is_timelapse=is_timelapse)
                 vmin_new = np.quantile(transformed, histogram_qmin) * vmin_factor
 
                 if np.allclose(basic.flatfield, np.ones_like(basic.flatfield)):
