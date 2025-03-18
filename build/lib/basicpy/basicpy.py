@@ -22,7 +22,6 @@ from hyperactive import Hyperactive
 from hyperactive.optimizers import HillClimbingOptimizer
 from pathlib import Path
 import json
-import math
 
 
 # initialize logger with the package name
@@ -155,16 +154,12 @@ class BaSiC(BaseModel):
         is_timelapse: bool = False,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         """Shortcut for `BaSiC.fit_transform`."""
-        out = self.fit_transform(
+        return self.fit_transform(
             images,
             fitting_weight,
             skip_shape_warning,
             is_timelapse,
         )
-        gc.collect()
-        for _ in range(10):
-            torch.cuda.empty_cache()
-        return out
 
     def _resize(self, Im, target_shape):
         if isinstance(Im, da.core.Array):
@@ -187,22 +182,14 @@ class BaSiC(BaseModel):
         elif isinstance(Im, np.ndarray) or isinstance(Im, torch.Tensor):
             if isinstance(Im, np.ndarray):
                 Im = torch.from_numpy(Im)
-            if Im.is_cuda:
-                Im2 = F.interpolate(
-                    Im,
+            Im2 = torch.empty(target_shape, dtype=Im.dtype, device=self.device)
+            for i in range(Im.shape[0]):
+                Im2[i] = F.interpolate(
+                    Im[i : i + 1].to(self.device) + 0.0,
                     target_shape[-2:],
                     mode="bilinear",
                     align_corners=True,
                 )
-            else:
-                Im2 = torch.empty(target_shape, dtype=Im.dtype, device=self.device)
-                for i in range(Im.shape[0]):
-                    Im2[i] = F.interpolate(
-                        Im[i : i + 1].to(self.device),
-                        target_shape[-2:],
-                        mode="bilinear",
-                        align_corners=True,
-                    )
         else:
             raise ValueError(
                 "Input must be either numpy.ndarray, dask.core.Array, or torch.Tensor."
@@ -221,23 +208,11 @@ class BaSiC(BaseModel):
             else:
                 working_shape = self.working_size
         target_shape = [*Im.shape[:2], *working_shape]
-        Im = self._resize(Im + 0.0, target_shape)
+        Im = self._resize(Im, target_shape)
 
         return Im
 
     def fit(
-        self,
-        images: np.ndarray,
-        fitting_weight: Optional[np.ndarray] = None,
-        skip_shape_warning=False,
-        for_autotune=False,
-    ) -> None:
-        self._fit(images, fitting_weight, skip_shape_warning, for_autotune)
-        gc.collect()
-        for _ in range(10):
-            torch.cuda.empty_cache()
-
-    def _fit(
         self,
         images: np.ndarray,
         fitting_weight: Optional[np.ndarray] = None,
@@ -568,18 +543,6 @@ class BaSiC(BaseModel):
         is_timelapse: Union[bool, str] = False,
         frames: Optional[Sequence[Union[int, np.int_]]] = None,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
-        out = self._transform(images, is_timelapse, frames)
-        gc.collect()
-        for _ in range(10):
-            torch.cuda.empty_cache()
-        return out
-
-    def _transform(
-        self,
-        images: Union[np.ndarray, torch.Tensor, da.core.Array],
-        is_timelapse: Union[bool, str] = False,
-        frames: Optional[Sequence[Union[int, np.int_]]] = None,
-    ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         """Apply profile to images.
 
         Args:
@@ -676,54 +639,9 @@ class BaSiC(BaseModel):
         )
         corrected = self.transform(images, is_timelapse)
 
-        gc.collect()
-        for _ in range(10):
-            torch.cuda.empty_cache()
-
         return corrected
 
     def autotune(
-        self,
-        images: np.ndarray,
-        fitting_weight: Optional[np.ndarray] = None,
-        skip_shape_warning: bool = False,
-        search_space_flatfield=None,
-        init_params=None,
-        is_timelapse: bool = False,
-        histogram_qmin: float = 0.01,
-        histogram_qmax: float = 0.99,
-        vmin_factor: float = 0.6,
-        vrange_factor: float = 1.5,
-        histogram_bins: int = 1000,
-        histogram_use_fitting_weight: bool = True,
-        fourier_l0_norm_image_threshold: float = 0.1,
-        fourier_l0_norm_fourier_radius=10,
-        fourier_l0_norm_threshold=0.0,
-        fourier_l0_norm_cost_coef=30,
-    ) -> None:
-        self._autotune(
-            images,
-            fitting_weight,
-            skip_shape_warning,
-            search_space_flatfield,
-            init_params,
-            is_timelapse,
-            histogram_qmin,
-            histogram_qmax,
-            vmin_factor,
-            vrange_factor,
-            histogram_bins,
-            histogram_use_fitting_weight,
-            fourier_l0_norm_image_threshold,
-            fourier_l0_norm_fourier_radius,
-            fourier_l0_norm_threshold,
-            fourier_l0_norm_cost_coef,
-        )
-        gc.collect()
-        for _ in range(10):
-            torch.cuda.empty_cache()
-
-    def _autotune(
         self,
         images: np.ndarray,
         fitting_weight: Optional[np.ndarray] = None,
@@ -834,35 +752,12 @@ class BaSiC(BaseModel):
                     }
                 )
 
-        # if isinstance(images, torch.Tensor):
-        #     device = images.device
-        # else:
-        #     device = "cpu"
-        #     images = torch.from_numpy(images)
-
         if isinstance(images, torch.Tensor):
-            pass
-        else:
-            images = torch.from_numpy(images.astype(np.float32))
-
-        device_available = 1 if torch.cuda.is_available() else 0
-        if device_available:
-            free, _ = torch.cuda.mem_get_info()
-            if (images.numel() * 4) / free < 0.1:
-                device = "cuda"
-            else:
-                device = "cpu"
+            device = images.device
         else:
             device = "cpu"
-
+            images = torch.from_numpy(images)
         images = images.to(torch.float)
-        size_r = images.numel() / 2**24
-
-        if size_r < 1:
-            size_r = 1
-        else:
-            size_r = math.ceil(size_r)
-        # images_numpy = images.cpu().data.numpy()
         if fitting_weight is None:
             pass
         else:
@@ -882,17 +777,9 @@ class BaSiC(BaseModel):
 
         transformed = basic.transform(images, is_timelapse=is_timelapse)
 
-        # vmin, vmax = np.percentile(
-        #     transformed, [histogram_qmin, histogram_qmax]
-        # )
-
         vmin, vmax = torch.quantile(
-            transformed.flatten()[::size_r],
-            torch.tensor([histogram_qmin, histogram_qmax]).to(device),
+            transformed, torch.Tensor([histogram_qmin, histogram_qmax]).to(device)
         )
-
-        # vmin = torch.from_numpy(vmin).to(device)
-        # vmax = torch.from_numpy(vmax).to(device)
 
         val_range = (
             vmax - vmin * vmin_factor
@@ -915,12 +802,7 @@ class BaSiC(BaseModel):
             transformed = basic.transform(images, is_timelapse=is_timelapse)
             if torch.isnan(transformed).sum():
                 return np.inf
-
-            vmin_new = (
-                torch.quantile(transformed.flatten()[::size_r], histogram_qmin)
-                * vmin_factor
-            )
-
+            vmin_new = torch.quantile(transformed, histogram_qmin) * vmin_factor
             if np.allclose(basic.flatfield, np.ones_like(basic.flatfield)):
                 return np.inf  # discard the case where flatfield is all ones
 
