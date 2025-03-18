@@ -23,6 +23,7 @@ from hyperactive.optimizers import HillClimbingOptimizer
 from pathlib import Path
 import json
 import math
+import gc
 
 
 # initialize logger with the package name
@@ -819,6 +820,20 @@ class BaSiC(BaseModel):
                 )
             )
             flatfield_pool_coarse = np.unique(flatfield_pool_coarse)
+        search_space_flatfield_outlier = search_space_flatfield[
+            (search_space_flatfield < 0.01) + (search_space_flatfield > 10)
+        ]
+        if len(search_space_flatfield_outlier) == 0:
+            pass
+        else:
+            flatfield_pool_coarse = np.concatenate(
+                (flatfield_pool_coarse, search_space_flatfield_outlier)
+            )
+            flatfield_pool = np.concatenate(
+                (flatfield_pool, search_space_flatfield_outlier)
+            )
+            flatfield_pool_coarse = np.sort(flatfield_pool_coarse)
+            flatfield_pool = np.sort(flatfield_pool)
 
         if init_params is None:
             init_params = {
@@ -946,6 +961,7 @@ class BaSiC(BaseModel):
             #     return np.inf
 
         cost_coarse = []
+        flatfield_coarse = []
         for i in tqdm.tqdm(flatfield_pool_coarse, desc="coarse-level search: "):
             params = {
                 "smoothness_flatfield": i,
@@ -954,8 +970,10 @@ class BaSiC(BaseModel):
             }
             a = fit_and_calc_entropy(params)
             cost_coarse.append(a)
+            flatfield_coarse.append(basic.flatfield)
 
         cost_coarse = torch.tensor(cost_coarse)
+        flatfield_coarse = np.stack(flatfield_coarse, 0)
 
         best_ind = torch.argmin(cost_coarse)
         if best_ind == len(cost_coarse) - 1:
@@ -978,8 +996,8 @@ class BaSiC(BaseModel):
             flatfield_pool_narrow = flatfield_pool[
                 (flatfield_pool >= best) * (flatfield_pool <= second_best)
             ]
-
         if len(flatfield_pool_narrow) == 2:
+            print("aa")
             flatfield_pool_narrow = (
                 [flatfield_pool_narrow[0]]
                 + [(flatfield_pool_narrow[0] + flatfield_pool_narrow[1]) / 2]
@@ -994,6 +1012,21 @@ class BaSiC(BaseModel):
             flatfield_pool_narrow[-1] == flatfield_pool_coarse
         ][0]
 
+        flatfield_narrow = np.zeros(
+            (
+                len(flatfield_pool_narrow),
+                basic.flatfield.shape[-2],
+                basic.flatfield.shape[-1],
+            ),
+            dtype=np.float32,
+        )
+        flatfield_narrow[0] = flatfield_coarse[
+            flatfield_pool_narrow[0] == flatfield_pool_coarse
+        ]
+        flatfield_narrow[-1] = flatfield_coarse[
+            flatfield_pool_narrow[-1] == flatfield_pool_coarse
+        ]
+
         ind = 1
         for i in tqdm.tqdm(flatfield_pool_narrow[1:-1], desc="fine-level search: "):
             params = {
@@ -1003,6 +1036,7 @@ class BaSiC(BaseModel):
             }
             a = fit_and_calc_entropy(params)
             cost_narrow[ind] = a
+            flatfield_narrow[ind] = basic.flatfield
             ind += 1
 
         self.__dict__.update(
@@ -1012,6 +1046,8 @@ class BaSiC(BaseModel):
                 * 0.1,
             }
         )
+
+        self.flatfield = flatfield_narrow[0]
 
         if not self.get_darkfield:
             print("\nAutotune is done.")
@@ -1228,7 +1264,11 @@ class BaSiC(BaseModel):
         """
         return self.model_dump()
 
-    def save_model(self, model_dir: Union[str, Path], overwrite: bool = False) -> None:
+    def save_model(
+        self,
+        model_dir: Union[str, Path],
+        overwrite: bool = False,
+    ) -> None:
         """Save current model to folder.
 
         Args:
