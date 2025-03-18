@@ -1156,6 +1156,8 @@ class BaSiC(BaseModel):
         device = images.device
         if isinstance(images, torch.Tensor):
             images_numpy = images.cpu().numpy()
+        else:
+            images_numpy = images
         init_params["fitting_mode"] = "approximate"
         basic = self.model_copy(update=init_params)
         basic.fit(
