@@ -883,16 +883,17 @@ class BaSiC(BaseModel):
         transformed = basic.transform(images, is_timelapse=is_timelapse)
 
         # vmin, vmax = np.percentile(
-        #     transformed, [histogram_qmin, histogram_qmax]
+        #     transformed.cpu().data.numpy(), [histogram_qmin, histogram_qmax]
         # )
+
+        # transformed_sorted, _ = torch.sort(transformed.flatten())
+        # vmin = transformed_sorted[int(transformed.numel()*histogram_qmin/100)]
+        # vmax = transformed_sorted[int(transformed.numel()*histogram_qmax/100)]
 
         vmin, vmax = torch.quantile(
             transformed.flatten()[::size_r],
-            torch.tensor([histogram_qmin, histogram_qmax]).to(device),
+            torch.tensor([histogram_qmin / 100, histogram_qmax / 100]).to(device),
         )
-
-        # vmin = torch.from_numpy(vmin).to(device)
-        # vmax = torch.from_numpy(vmax).to(device)
 
         val_range = (
             vmax - vmin * vmin_factor
@@ -917,9 +918,12 @@ class BaSiC(BaseModel):
                 return np.inf
 
             vmin_new = (
-                torch.quantile(transformed.flatten()[::size_r], histogram_qmin)
+                torch.quantile(transformed.flatten()[::size_r], histogram_qmin / 100)
                 * vmin_factor
             )
+
+            # transformed_sorted, _ = torch.sort(transformed.flatten())
+            # vmin_new = transformed_sorted[int(transformed.numel()*histogram_qmin/100)] * vmin_factor
 
             if np.allclose(basic.flatfield, np.ones_like(basic.flatfield)):
                 return np.inf  # discard the case where flatfield is all ones
