@@ -855,7 +855,7 @@ class BaSiC(BaseModel):
         else:
             device = "cpu"
 
-        images = images.to(torch.float)
+        images = images.to(device).to(torch.float)
         size_r = images.numel() / 2**24
 
         if size_r < 1:
