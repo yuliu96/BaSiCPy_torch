@@ -820,9 +820,12 @@ class BaSiC(BaseModel):
                 )
             )
             flatfield_pool_coarse = np.unique(flatfield_pool_coarse)
-        search_space_flatfield_outlier = search_space_flatfield[
-            (search_space_flatfield < 0.01) + (search_space_flatfield > 10)
-        ]
+        if search_space_flatfield_outlier is not None:
+            search_space_flatfield_outlier = search_space_flatfield[
+                (search_space_flatfield < 0.01) + (search_space_flatfield > 10)
+            ]
+        else:
+            search_space_flatfield_outlier = np.array([])
         if len(search_space_flatfield_outlier) == 0:
             pass
         else:
