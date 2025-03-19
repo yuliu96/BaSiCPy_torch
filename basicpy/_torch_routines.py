@@ -194,7 +194,7 @@ class ApproximateFit(BaseFit, nn.Module):
         I_R = _tshrinkage(I_R, weight / (self._ent1 * mu))
         R = Im - I_R
         # B = torch.mean(R, dim=1) / torch.mean(R)
-        B = torch.mean(R, dim=(1, 2)) - torch.mean(D)
+        B = torch.mean(R, dim=(1, 2)) - torch.mean(D_R)
         B = torch.clip(B, 0)
         I_B = S[None, ...] * B[:, None, None] + D_R[None, ...]
         I_B = I_B.reshape(s_s, -1)
