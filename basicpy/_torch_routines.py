@@ -143,7 +143,15 @@ class BaseFit(nn.Module):
         fit_residual = torch.ones_like(Im) * torch.inf
         value_diff = torch.inf
 
-        vals = [0, I_R, B, Y, mu, fit_residual, value_diff]
+        vals = [
+            0,
+            I_R,
+            B,
+            Y,
+            mu,
+            fit_residual,
+            value_diff,
+        ]
 
         self.register_buffer("Im", Im)
         self.register_buffer("W", W)
@@ -193,8 +201,8 @@ class ApproximateFit(BaseFit, nn.Module):
         I_R = I_R + (Im - I_B - I_R + (1 / mu) * Y) / self._ent1
         I_R = _tshrinkage(I_R, weight / (self._ent1 * mu))
         R = Im - I_R
-        # B = torch.mean(R, dim=1) / torch.mean(R)
-        B = torch.mean(R, dim=(1, 2)) - torch.mean(D_R)
+        B = torch.mean(R, dim=1) / torch.mean(R)
+        # B = torch.mean(R, dim=1) - torch.mean(D_R)
         B = torch.clip(B, 0)
         I_B = S[None, ...] * B[:, None, None] + D_R[None, ...]
         I_B = I_B.reshape(s_s, -1)
@@ -278,9 +286,11 @@ class ApproximateFit(BaseFit, nn.Module):
             0.0,
         )
 
-    def _step_only_baseline(self, vals):
+    def _step_only_baseline(
+        self,
+        vals,
+    ):
         k, I_R, B, Y, mu, fit_residual, value_diff = vals
-
         Im = self.Im[:, 0, ...]
         weight = self.W[:, 0, ...]
         S = self.S[0]
@@ -296,7 +306,9 @@ class ApproximateFit(BaseFit, nn.Module):
 
         R1 = Im - I_R
         B = torch.mean(R1, dim=(1, 2)) - torch.mean(D)
-        B = torch.clip(B, 0)
+
+        B = torch.clip(B, 0, None)
+
         fit_residual = Im - I_B - I_R
         Y = Y + mu * fit_residual
         mu = max(mu * self.rho, self.max_mu)

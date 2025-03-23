@@ -167,7 +167,11 @@ class BaSiC(BaseModel):
             torch.cuda.empty_cache()
         return out
 
-    def _resize(self, Im, target_shape):
+    def _resize(
+        self,
+        Im,
+        target_shape,
+    ):
         if isinstance(Im, da.core.Array):
             assert np.array_equal(target_shape[:-2], Im.shape[:-2])
             Im2 = (
@@ -210,7 +214,10 @@ class BaSiC(BaseModel):
             )
         return Im2
 
-    def _resize_to_working_size(self, Im):
+    def _resize_to_working_size(
+        self,
+        Im,
+    ):
         """Resize the images to the working size."""
         if np.isscalar(self.working_size):
             working_shape = [self.working_size] * (Im.ndim - 2)
@@ -472,6 +479,8 @@ class BaSiC(BaseModel):
             )
             W_D = fitting_step.calc_dark_weights(D_R)
 
+            self._W = W.cpu().data.numpy()
+
             self._weight = W
             self._weight_dark = W_D
             self._residual = I_R
@@ -511,27 +520,27 @@ class BaSiC(BaseModel):
         assert D is not None
         assert B is not None
 
-        if self.sort_intensity:
-            for i in range(self.max_reweight_iterations_baseline):
-                B = torch.ones(Im.shape[0], dtype=torch.float32, device=self.device)
-                if self.fitting_mode == "approximate":
-                    B = torch.mean(Im, dim=(1, 2, 3))
-                I_R = torch.zeros(Im.shape, dtype=torch.float32, device=self.device)
-                logger.debug(f"reweighting iteration for baseline {i}")
-                I_R, B, norm_ratio, converged = fitting_step.fit_baseline(
-                    Im,
-                    W,
-                    S,
-                    D,
-                    B,
-                    I_R,
-                )
+        # if self.sort_intensity:
+        # for i in range(self.max_reweight_iterations_baseline):
+        #     B = torch.ones(Im.shape[0], dtype=torch.float32, device=self.device)
+        #     if self.fitting_mode == "approximate":
+        #         B = torch.mean(Im, dim=(1, 2, 3))
+        #     I_R = torch.zeros(Im.shape, dtype=torch.float32, device=self.device)
+        #     logger.debug(f"reweighting iteration for baseline {i}")
+        #     I_R, B, norm_ratio, converged = fitting_step.fit_baseline(
+        #         Im,
+        #         W,
+        #         S,
+        #         D,
+        #         B,
+        #         I_R,
+        #     )
 
-                I_B = B[:, None, None, None] * S[None, ...] + D[None, ...]
-                W = fitting_step.calc_weights_baseline(I_B, I_R, Ws, self.epsilon) * Ws
-                self._weight = W
-                self._residual = I_R
-                logger.debug(f"Iteration {i} finished.")
+        #     I_B = B[:, None, None, None] * S[None, ...] + D[None, ...]
+        #     W = fitting_step.calc_weights_baseline(I_B, I_R, Ws, self.epsilon) * Ws
+        #     self._weight = W
+        #     self._residual = I_R
+        #     logger.debug(f"Iteration {i} finished.")
 
         self._flatfield_small = S
         self._darkfield_small = D
@@ -553,23 +562,195 @@ class BaSiC(BaseModel):
             self.darkfield = self.darkfield[0]
             self._flatfield_small = self._flatfield_small[0]
             self._darkfield_small = self._darkfield_small[0]
-        self.baseline = B
+        # self.baseline = B
 
         self.flatfield = self.flatfield.cpu().numpy()
         self.darkfield = self.darkfield.cpu().numpy()
-        self.baseline = self.baseline.cpu().numpy()
+        # self.baseline = self.baseline.cpu().numpy()
 
         logger.info(
             f"=== BaSiC fit finished in {time.monotonic()-start_time} seconds ==="
         )
 
+    def fit_only_baseline(
+        self,
+        images,
+        fitting_weight,
+        S,
+        D,
+    ):
+        ndim = images.ndim
+        if images.ndim == 3:
+            images = images[:, None, ...]
+            if fitting_weight is not None:
+                fitting_weight = fitting_weight[:, None, ...]
+        elif images.ndim == 4:
+            if self.fitting_mode == "approximate":
+                raise ValueError(
+                    "Only 2-dimensional images are accepted for the approximate mode."
+                )
+        else:
+            raise ValueError(
+                "Images must be 3 or 4-dimensional array, "
+                + "with dimension of (T,Y,X) or (T,Z,Y,X)."
+            )
+
+        if fitting_weight is not None and fitting_weight.shape != images.shape:
+            raise ValueError("fitting_weight must have the same shape as images.")
+
+        if S.ndim == 3:
+            S = S[None]
+            D = D[None]
+        elif S.ndim == 2:
+            S = S[None, None]
+            D = D[None, None]
+        else:
+            raise ValueError("S and D must be 2D or 3D")
+
+        if isinstance(images, torch.Tensor):
+            if images.is_cuda:
+                self.device = "cuda"
+
+        if self.device == "none":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        Im = self._resize_to_working_size(images)
+
+        if isinstance(Im, np.ndarray):
+            Im = torch.from_numpy(Im.astype(np.float32)).to(self.device)
+        else:
+            Im = Im.to(self.device)
+
+        S = self._resize_to_working_size(
+            torch.from_numpy(S.astype(np.float32)).to(self.device)
+        )[
+            0,
+        ]
+        D = self._resize_to_working_size(
+            torch.from_numpy(D.astype(np.float32)).to(self.device)
+        )[
+            0,
+        ]
+
+        if fitting_weight is not None:
+            flag_segmentation = True
+            Ws = self._resize_to_working_size(fitting_weight) > 0
+            if isinstance(Ws, np.ndarray):
+                Ws = torch.from_numpy(Ws).to(self.device)
+            else:
+                Ws = Ws.to(self.device)
+        else:
+            flag_segmentation = False
+            Ws = torch.ones_like(Im)
+
+        # Im2 and Ws2 will possibly be sorted
+        if self.sort_intensity:
+            inds = torch.argsort(Im, dim=0)
+            Im2 = torch.take_along_dim(Im, inds, dim=0)
+            Ws2 = torch.take_along_dim(Ws, inds, dim=0)
+        else:
+            Im2 = Im
+            Ws2 = Ws
+
+        if self.smoothness_flatfield is None:
+            meanD = Im.mean(0)
+            meanD = meanD / meanD.mean()
+            W_meanD = dct.dct_2d(meanD, norm="ortho")
+            self._smoothness_flatfield = torch.sum(torch.abs(W_meanD)) / (400) * 0.5
+        else:
+            self._smoothness_flatfield = self.smoothness_flatfield
+        if self.smoothness_darkfield is None:
+            self._smoothness_darkfield = self._smoothness_flatfield * 0.1
+        else:
+            self._smoothness_darkfield = self.smoothness_darkfield
+        if self.sparse_cost_darkfield is None:
+            self._sparse_cost_darkfield = (
+                self._smoothness_darkfield * self.sparse_cost_darkfield * 100
+            )
+        else:
+            self._sparse_cost_darkfield = self.sparse_cost_darkfield
+
+        logger.debug(f"_smoothness_flatfield set to {self._smoothness_flatfield}")
+        logger.debug(f"_smoothness_darkfield set to {self._smoothness_darkfield}")
+        logger.debug(f"_sparse_cost_darkfield set to {self._sparse_cost_darkfield}")
+
+        _temp = torch.linalg.svd(Im2.reshape((Im2.shape[0], -1)), full_matrices=False)
+        spectral_norm = _temp[1][0]
+
+        if self.fitting_mode == "approximate":
+            init_mu = self.mu_coef / spectral_norm
+        else:
+            init_mu = self.mu_coef / spectral_norm / np.prod(Im2.shape)
+        fit_params = {}
+        fit_params.update(
+            dict(
+                epsilon=self.epsilon,
+                smoothness_flatfield=self._smoothness_flatfield,
+                smoothness_darkfield=self._smoothness_darkfield,
+                sparse_cost_darkfield=self._sparse_cost_darkfield,
+                rho=self.rho,
+                optimization_tol=self.optimization_tol,
+                optimization_tol_diff=self.optimization_tol_diff,
+                get_darkfield=self.get_darkfield,
+                max_iterations=self.max_iterations,
+                init_mu=init_mu,
+                max_mu=init_mu * self.max_mu_coef,
+                D_Z_max=torch.min(Im2),
+                image_norm=torch.linalg.norm(Im2),
+            )
+        )
+
+        # Initialize variables
+        W = torch.ones_like(Im2, dtype=torch.float32) * Ws2
+        if flag_segmentation:
+            W[Ws2 == 0] = self.epsilon
+        W = W * W.numel() / W.sum()
+        W_D = torch.zeros(
+            Im2.shape[1:],
+            dtype=torch.float32,
+            device=self.device,
+        )
+
+        if self.fitting_mode == "ladmap":
+            fit_params.update(
+                dict(
+                    sparse_cost_darkfield=self.sparse_cost_darkfield,
+                )
+            )
+            fitting_step = LadmapFit(**fit_params).to(self.device)
+        else:
+            fitting_step = ApproximateFit(**fit_params).to(self.device)
+        S = self._flatfield_small[None]
+        D = self._darkfield_small[None]
+        for i in range(self.max_reweight_iterations_baseline):
+            B = torch.ones(Im.shape[0], dtype=torch.float32, device=self.device)
+            if self.fitting_mode == "approximate":
+                B = torch.mean(Im, dim=(1, 2, 3))
+            I_R = torch.zeros(Im.shape, dtype=torch.float32, device=self.device)
+            logger.debug(f"reweighting iteration for baseline {i}")
+            I_R, B, norm_ratio, converged = fitting_step.fit_baseline(
+                Im,
+                W,
+                S,
+                D,
+                B,
+                I_R,
+            )
+
+            I_B = B[:, None, None, None] * S[None, ...] + D[None, ...]
+            W = fitting_step.calc_weights_baseline(I_B, I_R, Ws, self.epsilon) * Ws
+            self._weight = W
+            self._residual = I_R
+            logger.debug(f"Iteration {i} finished.")
+        return B
+
     def transform(
         self,
         images: Union[np.ndarray, torch.Tensor, da.core.Array],
+        fitting_weight=None,
         is_timelapse: Union[bool, str] = False,
         frames: Optional[Sequence[Union[int, np.int_]]] = None,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
-        out = self._transform(images, is_timelapse, frames)
+        out = self._transform(images, fitting_weight, is_timelapse, frames)
         gc.collect()
         for _ in range(10):
             torch.cuda.empty_cache()
@@ -578,6 +759,7 @@ class BaSiC(BaseModel):
     def _transform(
         self,
         images: Union[np.ndarray, torch.Tensor, da.core.Array],
+        fitting_weight,
         is_timelapse: Union[bool, str] = False,
         frames: Optional[Sequence[Union[int, np.int_]]] = None,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
@@ -599,25 +781,22 @@ class BaSiC(BaseModel):
             >>> basic.fit(images)
             >>> corrected = basic.transform(images)
         """
-        if self.baseline is None:
-            raise RuntimeError("BaSiC object is not initialized")
+        # if self.baseline is None:
+        #     raise RuntimeError("BaSiC object is not initialized")
 
         logger.info("=== BaSiC transform started ===")
         start_time = time.monotonic()
 
         # Convert to the correct format
         if isinstance(images, torch.Tensor):
-            baseline = torch.from_numpy(self.baseline).to(images.device)
             flatfield = torch.from_numpy(self.flatfield).to(images.device)
             darkfield = torch.from_numpy(self.darkfield).to(images.device)
             im_float = images.to(torch.float)
         elif isinstance(images, np.ndarray):
-            baseline = self.baseline
             flatfield = self.flatfield
             darkfield = self.darkfield
             im_float = images.astype(np.float32)
         elif isinstance(images, da.core.Array):
-            baseline = self.baseline
             flatfield = self.flatfield
             darkfield = self.darkfield
             im_float = images.astype(np.float32)
@@ -627,6 +806,15 @@ class BaSiC(BaseModel):
             )
 
         if is_timelapse:
+            baseline = self.fit_only_baseline(
+                images + 0.0,
+                fitting_weight,
+                self.flatfield,
+                self.darkfield,
+            )
+            self.baseline = baseline.cpu().data.numpy()
+            if not isinstance(im_float, torch.Tensor):
+                baseline = baseline.cpu().data.numpy()
             if is_timelapse is True:
                 is_timelapse = "multiplicative"
             if frames is None:
@@ -650,6 +838,7 @@ class BaSiC(BaseModel):
         logger.info(
             f"=== BaSiC transform finished in {time.monotonic()-start_time} seconds ==="
         )
+        output = output + max(-output.min() + 1, 0)
         return output
 
     def fit_transform(
@@ -675,7 +864,7 @@ class BaSiC(BaseModel):
             fitting_weight=fitting_weight,
             skip_shape_warning=skip_shape_warning,
         )
-        corrected = self.transform(images, is_timelapse)
+        corrected = self.transform(images, fitting_weight, is_timelapse)
 
         gc.collect()
         for _ in range(10):
@@ -1000,7 +1189,6 @@ class BaSiC(BaseModel):
                 (flatfield_pool >= best) * (flatfield_pool <= second_best)
             ]
         if len(flatfield_pool_narrow) == 2:
-            print("aa")
             flatfield_pool_narrow = (
                 [flatfield_pool_narrow[0]]
                 + [(flatfield_pool_narrow[0] + flatfield_pool_narrow[1]) / 2]

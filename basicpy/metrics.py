@@ -42,7 +42,6 @@ def entropy(
         image = image[ind]
         if weights is not None:
             weights = weights[ind]
-
     prob_density, edges = torch.histogram(
         image.cpu(),
         bins,
@@ -61,7 +60,7 @@ def entropy(
     #        np.sum(prob_density) * dx, 1
     #    ), f"{np.sum(prob_density) * dx} is not close to 1"
     prob_density = prob_density[prob_density > 0]
-    ent = -torch.sum(prob_density * np.log(prob_density)) * dx
+    ent = -torch.sum(prob_density * torch.log(prob_density)) * dx
     return ent
 
 
