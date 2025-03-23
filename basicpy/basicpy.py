@@ -1099,7 +1099,7 @@ class BaSiC(BaseModel):
 
         vmin, vmax = torch.quantile(
             transformed.flatten()[::size_r],
-            torch.tensor([histogram_qmin / 100, histogram_qmax / 100]).to(device),
+            torch.tensor([histogram_qmin / 1, histogram_qmax / 1]).to(device),
         )
 
         val_range = (
@@ -1125,7 +1125,7 @@ class BaSiC(BaseModel):
                 return np.inf
 
             vmin_new = (
-                torch.quantile(transformed.flatten()[::size_r], histogram_qmin / 100)
+                torch.quantile(transformed.flatten()[::size_r], histogram_qmin / 1)
                 * vmin_factor
             )
 
