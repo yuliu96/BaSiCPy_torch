@@ -980,6 +980,7 @@ class BaSiC(BaseModel):
                 histogram_qmax = images_mask.sum() / (
                     images.size if isinstance(images, np.ndarray) else images.numel()
                 )
+                print(histogram_qmax)
 
         if self.fitting_mode == "ladmap":
             print(
