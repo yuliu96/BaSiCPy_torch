@@ -974,13 +974,13 @@ class BaSiC(BaseModel):
             random_state: random state for the optimizer.
 
         """
-        if is_timelapse:
-            if histogram_qmax == 0.99:
-                images_mask = images < threshold_otsu(images[:, ::3, ::3])
-                histogram_qmax = images_mask.sum() / (
-                    images.size if isinstance(images, np.ndarray) else images.numel()
-                )
-                print(histogram_qmax)
+        # if is_timelapse:
+        #     if histogram_qmax == 0.99:
+        #         images_mask = images < threshold_otsu(images[:, ::3, ::3])
+        #         histogram_qmax = images_mask.sum() / (
+        #             images.size if isinstance(images, np.ndarray) else images.numel()
+        #         )
+        #         print(histogram_qmax)
 
         if self.fitting_mode == "ladmap":
             print(
