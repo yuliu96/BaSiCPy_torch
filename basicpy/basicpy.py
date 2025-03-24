@@ -24,6 +24,7 @@ from pathlib import Path
 import json
 import math
 import gc
+from skimage.filters import threshold_otsu
 
 
 # initialize logger with the package name
@@ -973,6 +974,13 @@ class BaSiC(BaseModel):
             random_state: random state for the optimizer.
 
         """
+        if is_timelapse:
+            if histogram_qmax == 0.99:
+                images_mask = images < threshold_otsu(images[:, ::3, ::3])
+                histogram_qmax = images_mask.sum() / (
+                    images.size if isinstance(images, np.ndarray) else images.numel()
+                )
+
         if self.fitting_mode == "ladmap":
             print(
                 "Autotune is not applicable to LADMAP mode, please try autotune_hillclimbing instead."
@@ -1099,8 +1107,15 @@ class BaSiC(BaseModel):
 
         vmin, vmax = torch.quantile(
             transformed.flatten()[::size_r],
-            torch.tensor([histogram_qmin / 1, histogram_qmax / 1]).to(device),
+            torch.tensor([histogram_qmin / 1, histogram_qmax / 1])
+            .to(torch.float)
+            .to(device),
         )
+
+        # vmin, vmax = np.quantile(
+        #     transformed.cpu().data.numpy(),
+        #     [histogram_qmin / 1, histogram_qmax / 1],
+        # )
 
         val_range = (
             vmax - vmin * vmin_factor
@@ -1128,6 +1143,11 @@ class BaSiC(BaseModel):
                 torch.quantile(transformed.flatten()[::size_r], histogram_qmin / 1)
                 * vmin_factor
             )
+
+            # vmin_new = np.quantile(
+            #     transformed.cpu().data.numpy(),
+            #     histogram_qmin,
+            # )
 
             # transformed_sorted, _ = torch.sort(transformed.flatten())
             # vmin_new = transformed_sorted[int(transformed.numel()*histogram_qmin/100)] * vmin_factor
