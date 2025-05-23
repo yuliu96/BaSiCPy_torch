@@ -892,7 +892,7 @@ class BaSiC(BaseModel):
         fourier_l0_norm_cost_coef=30,
     ) -> None:
         self._autotune(
-            np.asarray(images),
+            np.asarray(images) if isinstance(images, da.core.Array) else images,
             fitting_weight,
             skip_shape_warning,
             search_space_flatfield,
