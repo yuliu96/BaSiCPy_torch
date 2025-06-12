@@ -179,7 +179,7 @@ class BaSiC(BaseModel):
                 da.from_array(
                     [
                         skimage_resize(
-                            np.array(Im[tuple(inds)]) + 0.0,
+                            np.array(Im[tuple(inds)]).astype(np.float32),
                             target_shape[-2:],
                             preserve_range=True,
                             **self.resize_params,
@@ -190,25 +190,32 @@ class BaSiC(BaseModel):
                 .reshape((*Im.shape[:-2], *target_shape[-2:]))
                 .compute()
             )
-        elif isinstance(Im, np.ndarray) or isinstance(Im, torch.Tensor):
-            if isinstance(Im, np.ndarray):
-                Im = torch.from_numpy(Im)
+        elif isinstance(Im, torch.Tensor):
             if Im.is_cuda:
                 Im2 = F.interpolate(
-                    Im,
+                    Im.float(),
                     target_shape[-2:],
                     mode="bilinear",
                     align_corners=True,
                 )
             else:
-                Im2 = torch.empty(target_shape, dtype=Im.dtype, device=self.device)
+                Im2 = torch.empty(target_shape, dtype=torch.float32, device=self.device)
                 for i in range(Im.shape[0]):
                     Im2[i] = F.interpolate(
-                        Im[i : i + 1].to(self.device),
+                        Im[i : i + 1].float().to(self.device),
                         target_shape[-2:],
                         mode="bilinear",
                         align_corners=True,
                     )
+        elif isinstance(Im, np.ndarray):
+            Im2 = torch.empty(target_shape, dtype=torch.float32, device=self.device)
+            for i in range(Im.shape[0]):
+                Im2[i] = F.interpolate(
+                    torch.from_numpy(Im[i : i + 1].astype(np.float32)).to(self.device),
+                    target_shape[-2:],
+                    mode="bilinear",
+                    align_corners=True,
+                )
         else:
             raise ValueError(
                 "Input must be either numpy.ndarray, dask.core.Array, or torch.Tensor."
@@ -230,7 +237,7 @@ class BaSiC(BaseModel):
             else:
                 working_shape = self.working_size
         target_shape = [*Im.shape[:2], *working_shape]
-        Im = self._resize(Im + 0.0, target_shape)
+        Im = self._resize(Im, target_shape)
 
         return Im
 
@@ -595,7 +602,6 @@ class BaSiC(BaseModel):
                 "Images must be 3 or 4-dimensional array, "
                 + "with dimension of (T,Y,X) or (T,Z,Y,X)."
             )
-
         if fitting_weight is not None and fitting_weight.shape != images.shape:
             raise ValueError("fitting_weight must have the same shape as images.")
 
@@ -615,7 +621,6 @@ class BaSiC(BaseModel):
         if self.device == "none":
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
         Im = self._resize_to_working_size(images)
-
         if isinstance(Im, np.ndarray):
             Im = torch.from_numpy(Im.astype(np.float32)).to(self.device)
         else:
@@ -783,7 +788,6 @@ class BaSiC(BaseModel):
         """
         # if self.baseline is None:
         #     raise RuntimeError("BaSiC object is not initialized")
-
         logger.info("=== BaSiC transform started ===")
         start_time = time.monotonic()
 
@@ -806,35 +810,28 @@ class BaSiC(BaseModel):
             )
 
         if is_timelapse:
-            baseline = self.fit_only_baseline(
-                images + 0.0,
-                fitting_weight,
-                self.flatfield,
-                self.darkfield,
-            )
-            self.baseline = baseline.cpu().data.numpy()
-            if not isinstance(im_float, torch.Tensor):
-                baseline = baseline.cpu().data.numpy()
-            if is_timelapse is True:
-                is_timelapse = "multiplicative"
             if frames is None:
                 _frames = slice(None)
             else:
                 _frames = np.array(frames)
-            baseline_inds = tuple([_frames] + ([None] * (im_float.ndim - 1)))
-            if is_timelapse == "multiplicative":
-                output = (im_float - darkfield[None]) / flatfield[None] - baseline[
-                    baseline_inds
-                ]
-            elif is_timelapse == "additive":
-                baseline_flatfield = flatfield[None] * baseline[baseline_inds]
-                output = im_float - darkfield[None] - baseline_flatfield
+            baseline_inds = tuple([_frames] + ([None] * (images.ndim - 1)))
+            baseline = self.fit_only_baseline(
+                images,
+                fitting_weight,
+                self.flatfield,
+                self.darkfield,
+            )
+            baseline = baseline[baseline_inds]
+            if isinstance(im_float, torch.Tensor):
+                baseline = baseline.to(im_float.device)
             else:
-                raise ValueError(
-                    "is_timelapse value must be bool, 'multiplicative' or 'additive'"
-                )
+                baseline = baseline.cpu().data.numpy()
+            # self.baseline = baseline.cpu().data.numpy()
+            output = (im_float - darkfield[None]) / flatfield[None] - baseline
+
         else:
             output = (im_float - darkfield[None]) / flatfield[None]
+
         logger.info(
             f"=== BaSiC transform finished in {time.monotonic()-start_time} seconds ==="
         )
@@ -1048,17 +1045,27 @@ class BaSiC(BaseModel):
                         "sparse_cost_darkfield": 1e-3,
                     }
                 )
+        basic = self.model_copy(update=init_params)
 
-        # if isinstance(images, torch.Tensor):
-        #     device = images.device
-        # else:
-        #     device = "cpu"
-        #     images = torch.from_numpy(images)
+        images = images[:: max(images.shape[0] // 50, 1), ::]
 
         if isinstance(images, torch.Tensor):
             pass
         else:
             images = torch.from_numpy(images.astype(np.float32))
+        r = images[0].numel() / (1024 * 1024)
+        if basic.device == "none":
+            basic.device = "cuda" if torch.cuda.is_available() else "cpu"
+        if r > 1:
+            images = basic._resize(
+                images[:, None],
+                (
+                    images.shape[0],
+                    1,
+                    int(images.shape[1] / r),
+                    int(images.shape[2] / r),
+                ),
+            )[:, 0]
 
         device_available = 1 if torch.cuda.is_available() else 0
         if device_available:
@@ -1087,7 +1094,6 @@ class BaSiC(BaseModel):
                 fitting_weight = torch.from_numpy(fitting_weight)
             fitting_weight = fitting_weight.to(device)
 
-        basic = self.model_copy(update=init_params)
         basic.fit(
             images,
             fitting_weight=fitting_weight,
@@ -1135,6 +1141,7 @@ class BaSiC(BaseModel):
                 skip_shape_warning=skip_shape_warning,
                 for_autotune=True,
             )
+
             transformed = basic.transform(images, is_timelapse=is_timelapse)
             if torch.isnan(transformed).sum():
                 return np.inf
