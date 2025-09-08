@@ -308,6 +308,7 @@ class BaSiC(BaseModel):
             )
 
         if fitting_weight is not None and fitting_weight.shape != images.shape:
+            print(fitting_weight.shape, images.shape)
             raise ValueError("fitting_weight must have the same shape as images.")
 
         logger.info("=== BaSiC fit started ===")
