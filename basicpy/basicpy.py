@@ -1049,7 +1049,10 @@ class BaSiC(BaseModel):
         basic = self.model_copy(update=init_params)
 
         images = images[:: max(images.shape[0] // 50, 1), ::]
-        fitting_weight = fitting_weight[:: max(fitting_weight.shape[0] // 50, 1), ::]
+        if fitting_weight is not None:
+            fitting_weight = fitting_weight[
+                :: max(fitting_weight.shape[0] // 50, 1), ::
+            ]
 
         if isinstance(images, torch.Tensor):
             pass
