@@ -16,6 +16,7 @@ import copy
 from basicpy._torch_routines import ApproximateFit, LadmapFit
 from basicpy.metrics import autotune_cost
 from basicpy.metrics_numpy import autotune_cost_numpy
+from basicpy.utils import safe_cast_back
 import tqdm
 
 from hyperactive import Hyperactive
@@ -837,7 +838,7 @@ class BaSiC(BaseModel):
             f"=== BaSiC transform finished in {time.monotonic()-start_time} seconds ==="
         )
         output = output + max(-output.min() + 1, 0)
-        return output
+        return safe_cast_back(output, images)
 
     def fit_transform(
         self,
