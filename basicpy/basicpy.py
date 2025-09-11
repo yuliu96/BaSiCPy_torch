@@ -1071,6 +1071,16 @@ class BaSiC(BaseModel):
                     int(images.shape[2] / r),
                 ),
             )[:, 0]
+            if fitting_weight is not None:
+                fitting_weight = basic._resize(
+                    fitting_weight[:, None],
+                    (
+                        fitting_weight.shape[0],
+                        1,
+                        int(fitting_weight.shape[1] / r),
+                        int(fitting_weight.shape[2] / r),
+                    ),
+                )[:, 0]
 
         device_available = 1 if torch.cuda.is_available() else 0
         if device_available:
@@ -1106,7 +1116,9 @@ class BaSiC(BaseModel):
             for_autotune=True,
         )
 
-        transformed = basic.transform(images, is_timelapse=is_timelapse)
+        transformed = basic.transform(
+            images, fitting_weight=fitting_weight, is_timelapse=is_timelapse
+        )
 
         # vmin, vmax = np.percentile(
         #     transformed.cpu().data.numpy(), [histogram_qmin, histogram_qmax]
@@ -1147,7 +1159,9 @@ class BaSiC(BaseModel):
                 for_autotune=True,
             )
 
-            transformed = basic.transform(images, is_timelapse=is_timelapse)
+            transformed = basic.transform(
+                images, fitting_weight=fitting_weight, is_timelapse=is_timelapse
+            )
             if torch.isnan(transformed).sum():
                 return np.inf
 
