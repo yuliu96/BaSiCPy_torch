@@ -309,7 +309,6 @@ class BaSiC(BaseModel):
             )
 
         if fitting_weight is not None and fitting_weight.shape != images.shape:
-            print(fitting_weight.shape, images.shape)
             raise ValueError("fitting_weight must have the same shape as images.")
 
         logger.info("=== BaSiC fit started ===")
@@ -836,7 +835,7 @@ class BaSiC(BaseModel):
         logger.info(
             f"=== BaSiC transform finished in {time.monotonic()-start_time} seconds ==="
         )
-        print(output.min())
+
         # output = output + max(-output.min() + 1, 0)
         return safe_cast_back(output, images)
 
