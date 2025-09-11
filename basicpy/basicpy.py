@@ -460,6 +460,7 @@ class BaSiC(BaseModel):
 
             D_R = D_R + D_Z * S
             S = I_B.mean(dim=0) - D_R
+            mean_S = torch.mean(S)
             S = S / torch.mean(S)  # flatfields
             logger.debug(f"single-step optimization score: {norm_ratio}.")
             logger.debug(f"mean of S: {float(torch.mean(S))}.")
@@ -572,11 +573,11 @@ class BaSiC(BaseModel):
             self.darkfield = self.darkfield[0]
             self._flatfield_small = self._flatfield_small[0]
             self._darkfield_small = self._darkfield_small[0]
-        # self.baseline = B
+        self.baseline = B * mean_S
 
         self.flatfield = self.flatfield.cpu().numpy()
         self.darkfield = self.darkfield.cpu().numpy()
-        # self.baseline = self.baseline.cpu().numpy()
+        self.baseline = self.baseline.cpu().numpy()
 
         logger.info(
             f"=== BaSiC fit finished in {time.monotonic()-start_time} seconds ==="
@@ -650,15 +651,6 @@ class BaSiC(BaseModel):
             flag_segmentation = False
             Ws = torch.ones_like(Im)
 
-        # Im2 and Ws2 will possibly be sorted
-        if self.sort_intensity:
-            inds = torch.argsort(Im, dim=0)
-            Im2 = torch.take_along_dim(Im, inds, dim=0)
-            Ws2 = torch.take_along_dim(Ws, inds, dim=0)
-        else:
-            Im2 = Im
-            Ws2 = Ws
-
         if self.smoothness_flatfield is None:
             meanD = Im.mean(0)
             meanD = meanD / meanD.mean()
@@ -681,13 +673,13 @@ class BaSiC(BaseModel):
         logger.debug(f"_smoothness_darkfield set to {self._smoothness_darkfield}")
         logger.debug(f"_sparse_cost_darkfield set to {self._sparse_cost_darkfield}")
 
-        _temp = torch.linalg.svd(Im2.reshape((Im2.shape[0], -1)), full_matrices=False)
+        _temp = torch.linalg.svd(Im.reshape((Im.shape[0], -1)), full_matrices=False)
         spectral_norm = _temp[1][0]
 
         if self.fitting_mode == "approximate":
             init_mu = self.mu_coef / spectral_norm
         else:
-            init_mu = self.mu_coef / spectral_norm / np.prod(Im2.shape)
+            init_mu = self.mu_coef / spectral_norm / np.prod(Im.shape)
         fit_params = {}
         fit_params.update(
             dict(
@@ -702,18 +694,18 @@ class BaSiC(BaseModel):
                 max_iterations=self.max_iterations,
                 init_mu=init_mu,
                 max_mu=init_mu * self.max_mu_coef,
-                D_Z_max=torch.min(Im2),
-                image_norm=torch.linalg.norm(Im2),
+                D_Z_max=torch.min(Im),
+                image_norm=torch.linalg.norm(Im),
             )
         )
 
         # Initialize variables
-        W = torch.ones_like(Im2, dtype=torch.float32) * Ws2
+        W = torch.ones_like(Im, dtype=torch.float32) * Ws
         if flag_segmentation:
-            W[Ws2 == 0] = self.epsilon
+            W[Ws == 0] = self.epsilon
         W = W * W.numel() / W.sum()
         W_D = torch.zeros(
-            Im2.shape[1:],
+            Im.shape[1:],
             dtype=torch.float32,
             device=self.device,
         )
@@ -729,9 +721,15 @@ class BaSiC(BaseModel):
             fitting_step = ApproximateFit(**fit_params).to(self.device)
 
         for i in range(self.max_reweight_iterations_baseline):
-            B = torch.ones(Im.shape[0], dtype=torch.float32, device=self.device)
+
             if self.fitting_mode == "approximate":
-                B = torch.mean(Im, dim=(1, 2, 3))
+                B = copy.deepcopy(Im)
+                B[Ws == 0] = torch.nan
+                B = torch.squeeze(torch.nanmean(B, dim=(-2, -1)))
+                B = torch.nan_to_num(B)
+            else:
+                B = torch.ones(Im.shape[0], dtype=torch.float32, device=self.device)
+
             I_R = torch.zeros(Im.shape, dtype=torch.float32, device=self.device)
             logger.debug(f"reweighting iteration for baseline {i}")
             I_R, B, norm_ratio, converged = fitting_step.fit_baseline(
@@ -744,10 +742,11 @@ class BaSiC(BaseModel):
             )
 
             I_B = B[:, None, None, None] * S[None, ...] + D[None, ...]
-            W = fitting_step.calc_weights_baseline(I_B, I_R, Ws, self.epsilon) * Ws
+            W = fitting_step.calc_weights(I_B, I_R, Ws, self.epsilon) * Ws
             self._weight = W
             self._residual = I_R
             logger.debug(f"Iteration {i} finished.")
+
         return B
 
     def transform(
@@ -818,7 +817,7 @@ class BaSiC(BaseModel):
                 _frames = np.array(frames)
             baseline_inds = tuple([_frames] + ([None] * (images.ndim - 1)))
             baseline = self.fit_only_baseline(
-                images,
+                im_float,
                 fitting_weight,
                 self.flatfield,
                 self.darkfield,
@@ -837,7 +836,8 @@ class BaSiC(BaseModel):
         logger.info(
             f"=== BaSiC transform finished in {time.monotonic()-start_time} seconds ==="
         )
-        output = output + max(-output.min() + 1, 0)
+        print(output.min())
+        # output = output + max(-output.min() + 1, 0)
         return safe_cast_back(output, images)
 
     def fit_transform(
