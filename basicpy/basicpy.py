@@ -580,8 +580,6 @@ class BaSiC(BaseModel):
         self.flatfield = self.flatfield.cpu().numpy()
         self.darkfield = self.darkfield.cpu().numpy()
         self.baseline = self.baseline.cpu().numpy()
-        plt.plot(self.baseline)
-        plt.show()
 
         logger.info(
             f"=== BaSiC fit finished in {time.monotonic()-start_time} seconds ==="
