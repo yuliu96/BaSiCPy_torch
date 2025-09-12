@@ -435,9 +435,12 @@ class BaSiC(BaseModel):
             D_Z = 0.0
             if self.fitting_mode == "approximate":
                 B = copy.deepcopy(Im2)
-                B[Ws2 == 0] = torch.nan
-                B = torch.squeeze(torch.nanmean(B, dim=(-2, -1))) / torch.nanmean(B)
-                B = torch.nan_to_num(B)
+                if fitting_weight is not None:
+                    B[Ws2 == 0] = torch.nan
+                    B = torch.squeeze(torch.nanmean(B, dim=(-2, -1))) / torch.nanmean(B)
+                    B = torch.nan_to_num(B)
+                else:
+                    B = torch.squeeze(torch.amin(B, dim=(-2, -1)))
             else:
                 B = torch.ones(Im2.shape[0], dtype=torch.float32, device=self.device)
 
@@ -577,6 +580,8 @@ class BaSiC(BaseModel):
         self.flatfield = self.flatfield.cpu().numpy()
         self.darkfield = self.darkfield.cpu().numpy()
         self.baseline = self.baseline.cpu().numpy()
+        plt.plot(self.baseline)
+        plt.show()
 
         logger.info(
             f"=== BaSiC fit finished in {time.monotonic()-start_time} seconds ==="
@@ -647,8 +652,14 @@ class BaSiC(BaseModel):
             else:
                 Ws = Ws.to(self.device)
         else:
-            flag_segmentation = False
+            flag_segmentation = True
             Ws = torch.ones_like(Im)
+            Ws = Ws * (
+                Im
+                < torch.quantile(Im.reshape(Im.shape[0], -1), 0.1, dim=-1)[
+                    :, None, None, None
+                ]
+            )
 
         if self.smoothness_flatfield is None:
             meanD = Im.mean(0)
@@ -722,10 +733,13 @@ class BaSiC(BaseModel):
         for i in range(self.max_reweight_iterations_baseline):
 
             if self.fitting_mode == "approximate":
-                B = copy.deepcopy(Im)
-                B[Ws == 0] = torch.nan
-                B = torch.squeeze(torch.nanmean(B, dim=(-2, -1)))
-                B = torch.nan_to_num(B)
+                if fitting_weight is not None:
+                    B = copy.deepcopy(Im)
+                    B[Ws == 0] = torch.nan
+                    B = torch.squeeze(torch.nanmean(B, dim=(-2, -1)))
+                    B = torch.nan_to_num(B)
+                else:
+                    B = torch.squeeze(torch.amin(Im, dim=(-2, -1)))
             else:
                 B = torch.ones(Im.shape[0], dtype=torch.float32, device=self.device)
 
@@ -827,6 +841,7 @@ class BaSiC(BaseModel):
             else:
                 baseline = baseline.cpu().data.numpy()
             # self.baseline = baseline.cpu().data.numpy()
+
             output = (im_float - darkfield[None]) / flatfield[None] - baseline
 
         else:
