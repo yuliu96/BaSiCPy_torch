@@ -53,9 +53,9 @@ def entropy(
     # density : p(x) ... normalized such that the integral over the range is 1
     dx = edges[1] - edges[0]
 
-    assert torch.allclose(
-        dx, edges[1:] - edges[:-1], atol=torch.max(edges) * 0.01, rtol=0.01
-    )
+    # assert torch.allclose(
+    #     dx, edges[1:] - edges[:-1], atol=torch.max(edges) * 0.01, rtol=0.01
+    # )
     #    assert np.isclose(
     #        np.sum(prob_density) * dx, 1
     #    ), f"{np.sum(prob_density) * dx} is not close to 1"

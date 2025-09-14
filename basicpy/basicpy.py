@@ -1232,7 +1232,7 @@ class BaSiC(BaseModel):
         elif best_ind == 0:
             second_best_ind = 1
         else:
-            if cost_coarse[best_ind - 1] > cost_coarse[best_ind + 1]:
+            if cost_coarse[best_ind - 1] < cost_coarse[best_ind + 1]:
                 second_best_ind = best_ind - 1
             else:
                 second_best_ind = best_ind + 1
