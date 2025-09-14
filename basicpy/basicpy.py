@@ -733,13 +733,10 @@ class BaSiC(BaseModel):
         for i in range(self.max_reweight_iterations_baseline):
 
             if self.fitting_mode == "approximate":
-                if fitting_weight is not None:
-                    B = copy.deepcopy(Im)
-                    B[Ws == 0] = torch.nan
-                    B = torch.squeeze(torch.nanmean(B, dim=(-2, -1)))
-                    B = torch.nan_to_num(B)
-                else:
-                    B = torch.squeeze(torch.amin(Im, dim=(-2, -1)))
+                B = copy.deepcopy(Im)
+                B[Ws == 0] = torch.nan
+                B = torch.squeeze(torch.nanmean(B, dim=(-2, -1)))
+                B = torch.nan_to_num(B)
             else:
                 B = torch.ones(Im.shape[0], dtype=torch.float32, device=self.device)
 
