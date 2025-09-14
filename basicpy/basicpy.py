@@ -440,12 +440,9 @@ class BaSiC(BaseModel):
             D_Z = 0.0
             if self.fitting_mode == "approximate":
                 B = copy.deepcopy(Im2)
-                if fitting_weight is not None:
-                    B[Ws2 == 0] = torch.nan
-                    B = torch.squeeze(torch.nanmean(B, dim=(-2, -1))) / torch.nanmean(B)
-                    B = torch.nan_to_num(B)
-                else:
-                    B = torch.squeeze(torch.amin(B, dim=(-2, -1)))
+                B[Ws2 == 0] = torch.nan
+                B = torch.squeeze(torch.nanmean(B, dim=(-2, -1))) / torch.nanmean(B)
+                B = torch.nan_to_num(B)
             else:
                 B = torch.ones(Im2.shape[0], dtype=torch.float32, device=self.device)
 
@@ -1237,10 +1234,8 @@ class BaSiC(BaseModel):
         elif best_ind == 0:
             second_best_ind = 1
         else:
-            if cost_coarse[best_ind - 1] < cost_coarse[best_ind + 1]:
-                second_best_ind = best_ind - 1
-            else:
-                second_best_ind = best_ind + 1
+            second_best_ind = best_ind - 1
+            best_ind = best_ind + 1
         best = flatfield_pool_coarse[best_ind]
         second_best = flatfield_pool_coarse[second_best_ind]
 
