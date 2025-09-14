@@ -19,8 +19,13 @@ from basicpy.metrics_numpy import autotune_cost_numpy
 from basicpy.utils import safe_cast_back
 import tqdm
 
-from hyperactive import Hyperactive
-from hyperactive.optimizers import HillClimbingOptimizer
+try:
+    from hyperactive import Hyperactive
+    from hyperactive.optimizers import HillClimbingOptimizer
+except ImportError:
+    Hyperactive = None
+    HillClimbingOptimizer = None
+
 from pathlib import Path
 import json
 import math
