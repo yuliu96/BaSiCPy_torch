@@ -651,15 +651,15 @@ class BaSiC(BaseModel):
                 Ws = torch.from_numpy(Ws).to(self.device)
             else:
                 Ws = Ws.to(self.device)
-        else:
-            flag_segmentation = True
-            Ws = torch.ones_like(Im)
-            Ws = Ws * (
-                Im
-                < torch.quantile(Im.reshape(Im.shape[0], -1), 0.1, dim=-1)[
-                    :, None, None, None
-                ]
-            )
+
+        flag_segmentation = True
+        Ws = torch.ones_like(Im)
+        Ws = Ws * (
+            Im
+            < torch.quantile(Im.reshape(Im.shape[0], -1), 0.1, dim=-1)[
+                :, None, None, None
+            ]
+        )
 
         if self.smoothness_flatfield is None:
             meanD = Im.mean(0)
