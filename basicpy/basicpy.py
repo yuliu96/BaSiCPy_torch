@@ -802,54 +802,81 @@ class BaSiC(BaseModel):
         logger.info("=== BaSiC transform started ===")
         start_time = time.monotonic()
 
-        # Convert to the correct format
         if isinstance(images, torch.Tensor):
-            flatfield = torch.from_numpy(self.flatfield).to(images.device)
-            darkfield = torch.from_numpy(self.darkfield).to(images.device)
-            im_float = images.to(torch.float)
+            output = torch.zeros_like(images)
+            chunks = torch.split(images, 50, dim=0)
         elif isinstance(images, np.ndarray):
-            flatfield = self.flatfield
-            darkfield = self.darkfield
-            im_float = images.astype(np.float32)
+            output = np.zeros_like(images)
+            chunks = np.array_split(images, np.arange(50, images.shape[0], 50), axis=0)
         elif isinstance(images, da.core.Array):
-            flatfield = self.flatfield
-            darkfield = self.darkfield
-            im_float = images.astype(np.float32)
+            output = []
+            chunks = da.array_split(
+                images,
+                np.arange(50, images.shape[0], 50),
+                axis=0,
+            )
         else:
             raise ValueError(
                 "Input must be either numpy.ndarray, dask.core.Array, or torch.Tensor."
             )
 
-        if is_timelapse:
-            if frames is None:
-                _frames = slice(None)
+        for i, images in enumerate(tqdm.tqdm(chunks, desc="Transforming")):
+            # Convert to the correct format
+            if isinstance(images, torch.Tensor):
+                flatfield = torch.from_numpy(self.flatfield).to(images.device)
+                darkfield = torch.from_numpy(self.darkfield).to(images.device)
+                im_float = images.to(torch.float)
+            elif isinstance(images, np.ndarray):
+                flatfield = self.flatfield
+                darkfield = self.darkfield
+                im_float = images.astype(np.float32)
+            elif isinstance(images, da.core.Array):
+                flatfield = self.flatfield
+                darkfield = self.darkfield
+                im_float = images.compute().astype(np.float32)
             else:
-                _frames = np.array(frames)
-            baseline_inds = tuple([_frames] + ([None] * (images.ndim - 1)))
-            baseline = self.fit_only_baseline(
-                im_float,
-                fitting_weight,
-                self.flatfield,
-                self.darkfield,
-            )
-            baseline = baseline[baseline_inds]
-            if isinstance(im_float, torch.Tensor):
-                baseline = baseline.to(im_float.device)
+                raise ValueError(
+                    "Input must be either numpy.ndarray, dask.core.Array, or torch.Tensor."
+                )
+
+            if is_timelapse:
+                if frames is None:
+                    _frames = slice(None)
+                else:
+                    _frames = np.array(frames)
+                baseline_inds = tuple([_frames] + ([None] * (images.ndim - 1)))
+                baseline = self.fit_only_baseline(
+                    im_float,
+                    fitting_weight,
+                    self.flatfield,
+                    self.darkfield,
+                )
+                baseline = baseline[baseline_inds]
+                if isinstance(im_float, torch.Tensor):
+                    baseline = baseline.to(im_float.device)
+                else:
+                    baseline = baseline.cpu().data.numpy()
+
+                output_chunks = (im_float - darkfield[None]) / flatfield[
+                    None
+                ] - baseline
+
             else:
-                baseline = baseline.cpu().data.numpy()
-            # self.baseline = baseline.cpu().data.numpy()
-
-            output = (im_float - darkfield[None]) / flatfield[None] - baseline
-
-        else:
-            output = (im_float - darkfield[None]) / flatfield[None]
+                output_chunks = (im_float - darkfield[None]) / flatfield[None]
+            output_chunks = safe_cast_back(output_chunks, images)
+            if isinstance(images, da.core.Array):
+                output.append(output_chunks)
+            else:
+                output[i * 50 : i * 50 + output_chunks.shape[0]] = output_chunks
+        if isinstance(output, list):
+            output = da.concatenate(output, axis=0)
 
         logger.info(
             f"=== BaSiC transform finished in {time.monotonic()-start_time} seconds ==="
         )
 
         # output = output + max(-output.min() + 1, 0)
-        return safe_cast_back(output, images)
+        return output
 
     def fit_transform(
         self,

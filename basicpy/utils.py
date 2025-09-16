@@ -32,7 +32,7 @@ def safe_cast_back(arr, ref):
         else:
             raise ValueError(f"Unsupported torch dtype: {target_dtype}")
 
-    elif isinstance(ref, np.ndarray):
+    else:
         arr = np.asarray(arr)
         if np.issubdtype(target_dtype, np.floating):
             return arr.astype(target_dtype)
