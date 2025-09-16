@@ -805,9 +805,19 @@ class BaSiC(BaseModel):
         if isinstance(images, torch.Tensor):
             output = torch.zeros_like(images)
             chunks = torch.split(images, 50, dim=0)
+            if fitting_weight is not None:
+                fitting_weight_chuncks = torch.split(fitting_weight, 50, dim=0)
+            else:
+                fitting_weight_chuncks = [None] * len(chunks)
         elif isinstance(images, np.ndarray):
             output = np.zeros_like(images)
             chunks = np.array_split(images, np.arange(50, images.shape[0], 50), axis=0)
+            if fitting_weight is not None:
+                fitting_weight_chuncks = np.array_split(
+                    fitting_weight, np.arange(50, images.shape[0], 50), axis=0
+                )
+            else:
+                fitting_weight_chuncks = [None] * len(chunks)
         elif isinstance(images, da.core.Array):
             output = []
             chunks = da.array_split(
@@ -815,6 +825,14 @@ class BaSiC(BaseModel):
                 np.arange(50, images.shape[0], 50),
                 axis=0,
             )
+            if fitting_weight is not None:
+                fitting_weight_chuncks = da.array_split(
+                    fitting_weight,
+                    np.arange(50, images.shape[0], 50),
+                    axis=0,
+                )
+            else:
+                fitting_weight_chuncks = [None] * len(chunks)
         else:
             raise ValueError(
                 "Input must be either numpy.ndarray, dask.core.Array, or torch.Tensor."
@@ -847,7 +865,7 @@ class BaSiC(BaseModel):
                 baseline_inds = tuple([_frames] + ([None] * (images.ndim - 1)))
                 baseline = self.fit_only_baseline(
                     im_float,
-                    fitting_weight,
+                    fitting_weight_chuncks[i],
                     self.flatfield,
                     self.darkfield,
                 )
