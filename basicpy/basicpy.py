@@ -465,7 +465,7 @@ class BaSiC(BaseModel):
             D_R = D_R + D_Z * S
             S = I_B.mean(dim=0) - D_R
             mean_S = torch.mean(S)
-            # S = S / torch.mean(S)  # flatfields
+            S = S / torch.mean(S)  # flatfields
             logger.debug(f"single-step optimization score: {norm_ratio}.")
             logger.debug(f"mean of S: {float(torch.mean(S))}.")
             self._score = norm_ratio
