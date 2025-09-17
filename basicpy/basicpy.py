@@ -16,7 +16,7 @@ import copy
 from basicpy._torch_routines import ApproximateFit, LadmapFit
 from basicpy.metrics import autotune_cost
 from basicpy.metrics_numpy import autotune_cost_numpy
-from basicpy.utils import safe_cast_back
+from basicpy.utils import safe_cast_back, maybe_tqdm
 import tqdm
 
 try:
@@ -765,8 +765,15 @@ class BaSiC(BaseModel):
         fitting_weight=None,
         is_timelapse: Union[bool, str] = False,
         frames: Optional[Sequence[Union[int, np.int_]]] = None,
+        use_tqdm: bool = True,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
-        out = self._transform(images, fitting_weight, is_timelapse, frames)
+        out = self._transform(
+            images,
+            fitting_weight,
+            is_timelapse,
+            frames,
+            use_tqdm=use_tqdm,
+        )
         gc.collect()
         for _ in range(10):
             torch.cuda.empty_cache()
@@ -778,6 +785,7 @@ class BaSiC(BaseModel):
         fitting_weight,
         is_timelapse: Union[bool, str] = False,
         frames: Optional[Sequence[Union[int, np.int_]]] = None,
+        use_tqdm: bool = True,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         """Apply profile to images.
 
@@ -841,7 +849,7 @@ class BaSiC(BaseModel):
             )
 
         for i, images in enumerate(
-            tqdm.tqdm(chunks, desc="Transforming: ", leave=False)
+            maybe_tqdm(chunks, use_tqdm=use_tqdm, desc="Transforming: ", leave=False)
         ):
             # Convert to the correct format
             if isinstance(images, torch.Tensor):
@@ -924,7 +932,7 @@ class BaSiC(BaseModel):
             fitting_weight=fitting_weight,
             skip_shape_warning=skip_shape_warning,
         )
-        corrected = self.transform(images, fitting_weight, is_timelapse)
+        corrected = self.transform(images, fitting_weight, is_timelapse, use_tqdm=False)
 
         gc.collect()
         for _ in range(10):
@@ -1179,7 +1187,10 @@ class BaSiC(BaseModel):
         )
 
         transformed = basic.transform(
-            images, fitting_weight=fitting_weight, is_timelapse=is_timelapse
+            images,
+            fitting_weight=fitting_weight,
+            is_timelapse=is_timelapse,
+            use_tqdm=False,
         )
 
         # vmin, vmax = np.percentile(
@@ -1222,7 +1233,10 @@ class BaSiC(BaseModel):
             )
 
             transformed = basic.transform(
-                images, fitting_weight=fitting_weight, is_timelapse=is_timelapse
+                images,
+                fitting_weight=fitting_weight,
+                is_timelapse=is_timelapse,
+                use_tqdm=False,
             )
             if torch.isnan(transformed).sum():
                 return np.inf
@@ -1461,7 +1475,11 @@ class BaSiC(BaseModel):
             fitting_weight=fitting_weight,
             skip_shape_warning=skip_shape_warning,
         )
-        transformed = basic.transform(images_numpy, is_timelapse=is_timelapse)
+        transformed = basic.transform(
+            images_numpy,
+            is_timelapse=is_timelapse,
+            use_tqdm=False,
+        )
 
         vmin, vmax = np.quantile(transformed, [histogram_qmin, histogram_qmax])
 
@@ -1484,7 +1502,11 @@ class BaSiC(BaseModel):
                     fitting_weight=fitting_weight,
                     skip_shape_warning=skip_shape_warning,
                 )
-                transformed = basic.transform(images_numpy, is_timelapse=is_timelapse)
+                transformed = basic.transform(
+                    images_numpy,
+                    is_timelapse=is_timelapse,
+                    use_tqdm=False,
+                )
                 vmin_new = np.quantile(transformed, histogram_qmin) * vmin_factor
 
                 if np.allclose(basic.flatfield, np.ones_like(basic.flatfield)):

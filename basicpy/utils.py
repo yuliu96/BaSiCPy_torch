@@ -62,3 +62,12 @@ def safe_cast_back(arr, ref):
             )
         else:
             raise ValueError(f"Unsupported numpy dtype: {target_dtype}")
+
+
+def maybe_tqdm(iterable, use_tqdm=True, **kwargs):
+    if use_tqdm:
+        import tqdm
+
+        return tqdm.tqdm(iterable, **kwargs)
+    else:
+        return iterable
