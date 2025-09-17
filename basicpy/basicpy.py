@@ -838,7 +838,9 @@ class BaSiC(BaseModel):
                 "Input must be either numpy.ndarray, dask.core.Array, or torch.Tensor."
             )
 
-        for i, images in enumerate(tqdm.tqdm(chunks, desc="Transforming")):
+        for i, images in enumerate(
+            tqdm.tqdm(chunks, desc="Transforming: ", leave=False)
+        ):
             # Convert to the correct format
             if isinstance(images, torch.Tensor):
                 flatfield = torch.from_numpy(self.flatfield).to(images.device)
