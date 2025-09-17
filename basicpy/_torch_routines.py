@@ -306,6 +306,7 @@ class ApproximateFit(BaseFit, nn.Module):
         R1 = Im - I_R
         B = torch.mean(R1, dim=(1, 2)) - torch.mean(D)
         B = torch.clip(B, 0, None)
+        B = torch.clip(B, None, Im.min())
 
         # eps = 1e-8
         # num = (weight * S * (R1 - D)).sum(dim=(1, 2))
