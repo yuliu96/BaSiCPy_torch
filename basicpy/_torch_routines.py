@@ -65,7 +65,6 @@ class BaseFit(nn.Module):
 
         fit_residual = vals[-2]
         norm_ratio = torch.linalg.norm(fit_residual.ravel(), ord=2) / self.image_norm
-
         return (norm_ratio > self.optimization_tol) * (k < self.max_iterations)
 
     def fit(
@@ -114,7 +113,7 @@ class BaseFit(nn.Module):
             vals = self._step(vals)
 
         k, S, S_hat, D_R, D_Z, I_B, I_R, B, Y, mu, fit_residual, value_diff = vals
-        norm_ratio = torch.linalg.norm(fit_residual.ravel()) / self.image_norm
+        norm_ratio = torch.linalg.norm(fit_residual.ravel(), ord=2) / self.image_norm
         return S, S_hat, D_R, D_Z, I_B, I_R, B, norm_ratio, k < self.max_iterations
 
     def fit_baseline(
@@ -162,7 +161,7 @@ class BaseFit(nn.Module):
             vals = self._step_only_baseline(vals)
 
         k, I_R, B, Y, mu, fit_residual, value_diff = vals
-        norm_ratio = torch.linalg.norm(fit_residual.ravel()) / self.image_norm
+        norm_ratio = torch.linalg.norm(fit_residual.ravel(), ord=2) / self.image_norm
         return I_R, B, norm_ratio, k < self.max_iterations
 
 
@@ -349,16 +348,15 @@ class ApproximateFit(BaseFit, nn.Module):
 
     def calc_weights_baseline(
         self,
-        I_B,
+        B,
         I_R,
         Ws2,
         epsilon,
     ):
-        I_B = I_B[:, 0, ...]
         I_R = I_R[:, 0, ...]
-        mean_vec = torch.mean(I_B, dim=(1, 2))
-        XE_norm = mean_vec[:, None, None] / (I_R + 1e-6)
-        weight = 1.0 / (torch.abs(XE_norm) + self.epsilon)
+        XE_norm = I_R / B[:, None, None]
+        weight = 1.0 / (torch.abs(XE_norm) + 0.1)
+        weight[Ws2[:, 0, ...] == 0] *= epsilon
         weight = weight / torch.mean(weight)
         return weight[:, None, ...]
 

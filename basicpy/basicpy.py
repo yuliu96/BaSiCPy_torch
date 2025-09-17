@@ -96,7 +96,7 @@ class BaSiC(BaseModel):
         1e7, description="Maximum allowed value of mu, divided by the initial value."
     )
     optimization_tol: float = Field(
-        1e-3,
+        1e-8,
         description="Optimization tolerance.",
     )
     optimization_tol_diff: float = Field(
@@ -178,6 +178,7 @@ class BaSiC(BaseModel):
         self,
         Im,
         target_shape,
+        method="bilinear",
     ):
         if isinstance(Im, da.core.Array):
             assert np.array_equal(target_shape[:-2], Im.shape[:-2])
@@ -201,8 +202,8 @@ class BaSiC(BaseModel):
                 Im2 = F.interpolate(
                     Im.float(),
                     target_shape[-2:],
-                    mode="bilinear",
-                    align_corners=True,
+                    mode=method,
+                    # align_corners=True,
                 )
             else:
                 Im2 = torch.empty(target_shape, dtype=torch.float32, device=self.device)
@@ -210,8 +211,8 @@ class BaSiC(BaseModel):
                     Im2[i] = F.interpolate(
                         Im[i : i + 1].float().to(self.device),
                         target_shape[-2:],
-                        mode="bilinear",
-                        align_corners=True,
+                        mode=method,
+                        # align_corners=True,
                     )
         elif isinstance(Im, np.ndarray):
             Im2 = torch.empty(target_shape, dtype=torch.float32, device=self.device)
@@ -219,8 +220,8 @@ class BaSiC(BaseModel):
                 Im2[i] = F.interpolate(
                     torch.from_numpy(Im[i : i + 1].astype(np.float32)).to(self.device),
                     target_shape[-2:],
-                    mode="bilinear",
-                    align_corners=True,
+                    mode=method,
+                    # align_corners=True,
                 )
         else:
             raise ValueError(
@@ -231,6 +232,7 @@ class BaSiC(BaseModel):
     def _resize_to_working_size(
         self,
         Im,
+        method="bilinear",
     ):
         """Resize the images to the working size."""
         if np.isscalar(self.working_size):
@@ -243,7 +245,7 @@ class BaSiC(BaseModel):
             else:
                 working_shape = self.working_size
         target_shape = [*Im.shape[:2], *working_shape]
-        Im = self._resize(Im, target_shape)
+        Im = self._resize(Im, target_shape, method)
 
         return Im
 
@@ -646,7 +648,7 @@ class BaSiC(BaseModel):
 
         if fitting_weight is not None:
             flag_segmentation = True
-            Ws = self._resize_to_working_size(fitting_weight) > 0
+            Ws = self._resize_to_working_size(fitting_weight, "nearest") > 0
             if isinstance(Ws, np.ndarray):
                 Ws = torch.from_numpy(Ws).to(self.device)
             else:
@@ -705,7 +707,7 @@ class BaSiC(BaseModel):
                 init_mu=init_mu,
                 max_mu=init_mu * self.max_mu_coef,
                 D_Z_max=torch.min(Im),
-                image_norm=torch.linalg.norm(Im),
+                image_norm=torch.linalg.norm(Im.ravel(), ord=2),
             )
         )
 
@@ -713,7 +715,6 @@ class BaSiC(BaseModel):
         W = torch.ones_like(Im, dtype=torch.float32) * Ws
         if flag_segmentation:
             W[Ws == 0] = self.epsilon
-        W = W * W.numel() / W.sum()
         W_D = torch.zeros(
             Im.shape[1:],
             dtype=torch.float32,
@@ -730,7 +731,7 @@ class BaSiC(BaseModel):
         else:
             fitting_step = ApproximateFit(**fit_params).to(self.device)
 
-        for i in range(self.max_reweight_iterations_baseline):
+        for i in range(1):  # self.max_reweight_iterations_baseline
 
             if self.fitting_mode == "approximate":
                 B = copy.deepcopy(Im)
@@ -751,8 +752,7 @@ class BaSiC(BaseModel):
                 I_R,
             )
 
-            I_B = B[:, None, None, None] * S[None, ...] + D[None, ...]
-            W = fitting_step.calc_weights(I_B, I_R, Ws, self.epsilon) * Ws
+            W = fitting_step.calc_weights_baseline(B, I_R, Ws, self.epsilon)  # * Ws
             self._weight = W
             self._residual = I_R
             logger.debug(f"Iteration {i} finished.")
