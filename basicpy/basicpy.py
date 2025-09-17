@@ -96,7 +96,7 @@ class BaSiC(BaseModel):
         1e7, description="Maximum allowed value of mu, divided by the initial value."
     )
     optimization_tol: float = Field(
-        1e-8,
+        1e-6,
         description="Optimization tolerance.",
     )
     optimization_tol_diff: float = Field(
@@ -803,14 +803,16 @@ class BaSiC(BaseModel):
         start_time = time.monotonic()
 
         if isinstance(images, torch.Tensor):
-            output = torch.zeros_like(images)
+            output = torch.zeros(
+                images.shape, device=images.device, dtype=torch.float32
+            )
             chunks = torch.split(images, 50, dim=0)
             if fitting_weight is not None:
                 fitting_weight_chuncks = torch.split(fitting_weight, 50, dim=0)
             else:
                 fitting_weight_chuncks = [None] * len(chunks)
         elif isinstance(images, np.ndarray):
-            output = np.zeros_like(images)
+            output = np.zeros(images.shape, dtype=np.float32)
             chunks = np.array_split(images, np.arange(50, images.shape[0], 50), axis=0)
             if fitting_weight is not None:
                 fitting_weight_chuncks = np.array_split(
@@ -876,21 +878,21 @@ class BaSiC(BaseModel):
                     baseline = baseline.to(im_float.device)
                 else:
                     baseline = baseline.cpu().data.numpy()
-
                 output_chunks = (im_float - darkfield[None]) / flatfield[
                     None
                 ] - baseline
 
             else:
                 output_chunks = (im_float - darkfield[None]) / flatfield[None]
-            # output_chunks = output_chunks + max(-output_chunks.min() + 1, 0)
-            output_chunks = safe_cast_back(output_chunks, images)
+            # output_chunks = safe_cast_back(output_chunks, images)
             if isinstance(images, da.core.Array):
                 output.append(output_chunks)
             else:
                 output[i * 50 : i * 50 + output_chunks.shape[0]] = output_chunks
         if isinstance(output, list):
             output = da.concatenate(output, axis=0)
+
+        output = safe_cast_back(output, images)
 
         logger.info(
             f"=== BaSiC transform finished in {time.monotonic()-start_time} seconds ==="
