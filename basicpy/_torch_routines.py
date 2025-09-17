@@ -314,7 +314,7 @@ class ApproximateFit(BaseFit, nn.Module):
         # B = num / den
         # B = torch.clamp(B, min=0)
 
-        I_B = S[None, ...] * B[:, None, None] + D[None, ...]
+        # I_B = S[None, ...] * B[:, None, None] + D[None, ...]
 
         fit_residual = Im - I_B - I_R
         Y = Y + mu * fit_residual
