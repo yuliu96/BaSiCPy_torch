@@ -883,6 +883,7 @@ class BaSiC(BaseModel):
 
             else:
                 output_chunks = (im_float - darkfield[None]) / flatfield[None]
+            output_chunks = output_chunks + max(-output_chunks.min() + 1, 0)
             output_chunks = safe_cast_back(output_chunks, images)
             if isinstance(images, da.core.Array):
                 output.append(output_chunks)
