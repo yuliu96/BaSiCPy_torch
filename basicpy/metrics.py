@@ -70,7 +70,7 @@ def fourier_L0_norm(
     fourier_radius: float = 10,
     exclude_edges: bool = True,
 ):
-    SF = dct.dct_2d(image)
+    SF = dct.dct_2d(image).abs()
     xy = torch.meshgrid(
         *[torch.arange(x).to(image.device) for x in image.shape], indexing="ij"
     )
