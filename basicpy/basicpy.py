@@ -1190,7 +1190,10 @@ class BaSiC(BaseModel):
         )
 
         transformed = basic.transform(
-            images, fitting_weight=fitting_weight, is_timelapse=is_timelapse
+            images,
+            fitting_weight=fitting_weight,
+            is_timelapse=is_timelapse,
+            use_tqdm=False,
         )
 
         # vmin, vmax = np.percentile(
@@ -1233,7 +1236,10 @@ class BaSiC(BaseModel):
             )
 
             transformed = basic.transform(
-                images, fitting_weight=fitting_weight, is_timelapse=is_timelapse
+                images,
+                fitting_weight=fitting_weight,
+                is_timelapse=is_timelapse,
+                use_tqdm=False,
             )
             if torch.isnan(transformed).sum():
                 return np.inf
@@ -1292,10 +1298,12 @@ class BaSiC(BaseModel):
         elif best_ind == 0:
             second_best_ind = 1
         else:
-            if cost_coarse[best_ind - 1] < cost_coarse[best_ind + 1]:
-                second_best_ind = best_ind - 1
-            else:
-                second_best_ind = best_ind + 1
+            # if cost_coarse[best_ind - 1] < cost_coarse[best_ind + 1]:
+            #     second_best_ind = best_ind - 1
+            # else:
+            #     second_best_ind = best_ind + 1
+            second_best_ind = best_ind + 1
+            best_ind = best_ind - 1
         best = flatfield_pool_coarse[best_ind]
         second_best = flatfield_pool_coarse[second_best_ind]
 
