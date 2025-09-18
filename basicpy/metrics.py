@@ -64,6 +64,7 @@ def entropy(
     return ent
 
 
+
 def fourier_L0_norm(
     image: np.ndarray,
     threshold: float = 0.1,
