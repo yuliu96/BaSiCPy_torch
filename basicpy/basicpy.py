@@ -203,7 +203,7 @@ class BaSiC(BaseModel):
                     Im.float(),
                     target_shape[-2:],
                     mode=method,
-                    # align_corners=True,
+                    align_corners=True,
                 )
             else:
                 Im2 = torch.empty(target_shape, dtype=torch.float32, device=self.device)
@@ -212,7 +212,7 @@ class BaSiC(BaseModel):
                         Im[i : i + 1].float().to(self.device),
                         target_shape[-2:],
                         mode=method,
-                        # align_corners=True,
+                        align_corners=True,
                     )
         elif isinstance(Im, np.ndarray):
             Im2 = torch.empty(target_shape, dtype=torch.float32, device=self.device)
@@ -221,7 +221,7 @@ class BaSiC(BaseModel):
                     torch.from_numpy(Im[i : i + 1].astype(np.float32)).to(self.device),
                     target_shape[-2:],
                     mode=method,
-                    # align_corners=True,
+                    align_corners=True,
                 )
         else:
             raise ValueError(
