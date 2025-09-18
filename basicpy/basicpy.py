@@ -648,7 +648,7 @@ class BaSiC(BaseModel):
 
         if fitting_weight is not None:
             flag_segmentation = True
-            Ws = self._resize_to_working_size(fitting_weight, "nearest") > 0
+            Ws = self._resize_to_working_size(fitting_weight) > 0
             if isinstance(Ws, np.ndarray):
                 Ws = torch.from_numpy(Ws).to(self.device)
             else:
@@ -731,7 +731,9 @@ class BaSiC(BaseModel):
         else:
             fitting_step = ApproximateFit(**fit_params).to(self.device)
 
-        for i in range(1):  # self.max_reweight_iterations_baseline
+        for i in range(
+            self.max_reweight_iterations_baseline
+        ):  # self.max_reweight_iterations_baseline
 
             if self.fitting_mode == "approximate":
                 B = copy.deepcopy(Im)
@@ -752,7 +754,7 @@ class BaSiC(BaseModel):
                 I_R,
             )
 
-            W = fitting_step.calc_weights_baseline(B, I_R, Ws, self.epsilon)  # * Ws
+            W = fitting_step.calc_weights_baseline(B, I_R, Ws, self.epsilon) * Ws
             self._weight = W
             self._residual = I_R
             logger.debug(f"Iteration {i} finished.")
@@ -886,6 +888,7 @@ class BaSiC(BaseModel):
                     baseline = baseline.to(im_float.device)
                 else:
                     baseline = baseline.cpu().data.numpy()
+
                 output_chunks = (im_float - darkfield[None]) / flatfield[
                     None
                 ] - baseline
