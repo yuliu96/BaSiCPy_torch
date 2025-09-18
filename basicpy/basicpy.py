@@ -994,7 +994,7 @@ class BaSiC(BaseModel):
         is_timelapse: bool = False,
         histogram_qmin: float = 0.01,
         histogram_qmax: float = 0.99,
-        vmin_factor: float = 1,
+        vmin_factor: float = 0.6,
         vrange_factor: float = 1.5,
         histogram_bins: int = 1000,
         histogram_use_fitting_weight: bool = True,
