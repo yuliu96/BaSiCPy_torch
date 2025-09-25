@@ -768,6 +768,7 @@ class BaSiC(BaseModel):
         is_timelapse: Union[bool, str] = False,
         frames: Optional[Sequence[Union[int, np.int_]]] = None,
         use_tqdm: bool = True,
+        require_safe_cast_back: bool = True,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         out = self._transform(
             images,
@@ -775,6 +776,7 @@ class BaSiC(BaseModel):
             is_timelapse,
             frames,
             use_tqdm=use_tqdm,
+            require_safe_cast_back=require_safe_cast_back,
         )
         gc.collect()
         for _ in range(10):
@@ -788,6 +790,7 @@ class BaSiC(BaseModel):
         is_timelapse: Union[bool, str] = False,
         frames: Optional[Sequence[Union[int, np.int_]]] = None,
         use_tqdm: bool = True,
+        require_safe_cast_back: bool = True,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         """Apply profile to images.
 
@@ -903,7 +906,7 @@ class BaSiC(BaseModel):
         if isinstance(output, list):
             output = da.concatenate(output, axis=0)
 
-        output = safe_cast_back(output, images)
+        output = safe_cast_back(output, images, require_safe_cast_back)
 
         logger.info(
             f"=== BaSiC transform finished in {time.monotonic()-start_time} seconds ==="
