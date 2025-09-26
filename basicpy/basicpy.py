@@ -96,7 +96,7 @@ class BaSiC(BaseModel):
         1e7, description="Maximum allowed value of mu, divided by the initial value."
     )
     optimization_tol: float = Field(
-        1e-6,
+        1e-3,
         description="Optimization tolerance.",
     )
     optimization_tol_diff: float = Field(
