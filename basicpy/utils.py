@@ -38,8 +38,6 @@ def safe_cast_back(arr, ref):
 
     else:
         arr = np.asarray(arr)
-        plt.plot(arr.mean((1, 2)))
-        plt.show()
         if np.issubdtype(target_dtype, np.floating):
             return arr.astype(target_dtype)
         elif target_dtype == np.uint8:
