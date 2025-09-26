@@ -161,6 +161,7 @@ class BaSiC(BaseModel):
         fitting_weight: Optional[Union[np.ndarray, torch.Tensor, da.core.Array]] = None,
         skip_shape_warning=False,
         is_timelapse: bool = False,
+        require_safe_cast_back: bool = True,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         """Shortcut for `BaSiC.fit_transform`."""
         out = self.fit_transform(
@@ -168,6 +169,7 @@ class BaSiC(BaseModel):
             fitting_weight,
             skip_shape_warning,
             is_timelapse,
+            require_safe_cast_back,
         )
         gc.collect()
         for _ in range(10):
@@ -203,7 +205,8 @@ class BaSiC(BaseModel):
                     Im.float(),
                     target_shape[-2:],
                     mode=method,
-                    align_corners=True,
+                    align_corners=True if method != "nearest" else False,
+                    antialias=True if method != "nearest" else False,
                 )
             else:
                 Im2 = torch.empty(target_shape, dtype=torch.float32, device=self.device)
@@ -212,7 +215,8 @@ class BaSiC(BaseModel):
                         Im[i : i + 1].float().to(self.device),
                         target_shape[-2:],
                         mode=method,
-                        align_corners=True,
+                        align_corners=True if method != "nearest" else False,
+                        antialias=True if method != "nearest" else False,
                     )
         elif isinstance(Im, np.ndarray):
             Im2 = torch.empty(target_shape, dtype=torch.float32, device=self.device)
@@ -221,7 +225,8 @@ class BaSiC(BaseModel):
                     torch.from_numpy(Im[i : i + 1].astype(np.float32)).to(self.device),
                     target_shape[-2:],
                     mode=method,
-                    align_corners=True,
+                    align_corners=True if method != "nearest" else None,
+                    antialias=True if method != "nearest" else False,
                 )
         else:
             raise ValueError(
@@ -337,7 +342,7 @@ class BaSiC(BaseModel):
 
         if fitting_weight is not None:
             flag_segmentation = True
-            Ws = self._resize_to_working_size(fitting_weight) > 0
+            Ws = self._resize_to_working_size(fitting_weight, "nearest") > 0
             if isinstance(Ws, np.ndarray):
                 Ws = torch.from_numpy(Ws).to(self.device)
             else:
@@ -648,7 +653,7 @@ class BaSiC(BaseModel):
 
         if fitting_weight is not None:
             flag_segmentation = True
-            Ws = self._resize_to_working_size(fitting_weight) > 0
+            Ws = self._resize_to_working_size(fitting_weight, "nearest") > 0
             if isinstance(Ws, np.ndarray):
                 Ws = torch.from_numpy(Ws).to(self.device)
             else:
@@ -662,6 +667,8 @@ class BaSiC(BaseModel):
                     :, None, None, None
                 ]
             )
+        # np.save("Im.npy", Im.squeeze().cpu().data.numpy())
+        # Im = torch.from_numpy(DD[:, None]).cuda()
 
         if self.smoothness_flatfield is None:
             meanD = Im.mean(0)
@@ -815,21 +822,25 @@ class BaSiC(BaseModel):
         logger.info("=== BaSiC transform started ===")
         start_time = time.monotonic()
 
+        s = 100
+
         if isinstance(images, torch.Tensor):
             output = torch.zeros(
-                images.shape, device=images.device, dtype=torch.float32
+                images.shape,
+                device=images.device,
+                dtype=torch.float32,
             )
-            chunks = torch.split(images, 50, dim=0)
+            chunks = torch.split(images, s, dim=0)
             if fitting_weight is not None:
-                fitting_weight_chuncks = torch.split(fitting_weight, 50, dim=0)
+                fitting_weight_chuncks = torch.split(fitting_weight, s, dim=0)
             else:
                 fitting_weight_chuncks = [None] * len(chunks)
         elif isinstance(images, np.ndarray):
             output = np.zeros(images.shape, dtype=np.float32)
-            chunks = np.array_split(images, np.arange(50, images.shape[0], 50), axis=0)
+            chunks = np.array_split(images, np.arange(s, images.shape[0], s), axis=0)
             if fitting_weight is not None:
                 fitting_weight_chuncks = np.array_split(
-                    fitting_weight, np.arange(50, images.shape[0], 50), axis=0
+                    fitting_weight, np.arange(s, images.shape[0], s), axis=0
                 )
             else:
                 fitting_weight_chuncks = [None] * len(chunks)
@@ -837,13 +848,13 @@ class BaSiC(BaseModel):
             output = []
             chunks = da.array_split(
                 images,
-                np.arange(50, images.shape[0], 50),
+                np.arange(s, images.shape[0], s),
                 axis=0,
             )
             if fitting_weight is not None:
                 fitting_weight_chuncks = da.array_split(
                     fitting_weight,
-                    np.arange(50, images.shape[0], 50),
+                    np.arange(s, images.shape[0], s),
                     axis=0,
                 )
             else:
@@ -898,21 +909,19 @@ class BaSiC(BaseModel):
 
             else:
                 output_chunks = (im_float - darkfield[None]) / flatfield[None]
-            # output_chunks = safe_cast_back(output_chunks, images)
             if isinstance(images, da.core.Array):
                 output.append(output_chunks)
             else:
-                output[i * 50 : i * 50 + output_chunks.shape[0]] = output_chunks
+                output[i * s : i * s + output_chunks.shape[0]] = output_chunks
         if isinstance(output, list):
             output = da.concatenate(output, axis=0)
-
-        output = safe_cast_back(output, images, require_safe_cast_back)
+        if require_safe_cast_back:
+            output = safe_cast_back(output, images)
 
         logger.info(
             f"=== BaSiC transform finished in {time.monotonic()-start_time} seconds ==="
         )
 
-        # output = output + max(-output.min() + 1, 0)
         return output
 
     def fit_transform(
@@ -921,6 +930,7 @@ class BaSiC(BaseModel):
         fitting_weight: Optional[Union[np.ndarray, torch.Tensor, da.core.Array]] = None,
         skip_shape_warning=False,
         is_timelapse: bool = False,
+        require_safe_cast_back: bool = True,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         """Fit and transform on data.
 
@@ -938,7 +948,13 @@ class BaSiC(BaseModel):
             fitting_weight=fitting_weight,
             skip_shape_warning=skip_shape_warning,
         )
-        corrected = self.transform(images, fitting_weight, is_timelapse, use_tqdm=False)
+        corrected = self.transform(
+            images,
+            fitting_weight,
+            is_timelapse,
+            use_tqdm=False,
+            require_safe_cast_back=require_safe_cast_back,
+        )
 
         gc.collect()
         for _ in range(10):
@@ -1131,7 +1147,7 @@ class BaSiC(BaseModel):
             ]
 
         if isinstance(images, torch.Tensor):
-            pass
+            images = images.to(torch.float)
         else:
             images = torch.from_numpy(images.astype(np.float32))
         r = images[0].numel() / (1024 * 1024)
@@ -1198,7 +1214,6 @@ class BaSiC(BaseModel):
             is_timelapse=is_timelapse,
             use_tqdm=False,
         )
-
         # vmin, vmax = np.percentile(
         #     transformed.cpu().data.numpy(), [histogram_qmin, histogram_qmax]
         # )
