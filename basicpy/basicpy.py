@@ -205,7 +205,7 @@ class BaSiC(BaseModel):
                     Im.float(),
                     target_shape[-2:],
                     mode=method,
-                    align_corners=True if method != "nearest" else False,
+                    align_corners=True if method != "nearest" else None,
                     antialias=True if method != "nearest" else False,
                 )
             else:
@@ -215,7 +215,7 @@ class BaSiC(BaseModel):
                         Im[i : i + 1].float().to(self.device),
                         target_shape[-2:],
                         mode=method,
-                        align_corners=True if method != "nearest" else False,
+                        align_corners=True if method != "nearest" else None,
                         antialias=True if method != "nearest" else False,
                     )
         elif isinstance(Im, np.ndarray):
