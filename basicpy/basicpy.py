@@ -16,7 +16,7 @@ import copy
 from basicpy._torch_routines import ApproximateFit, LadmapFit
 from basicpy.metrics import autotune_cost
 from basicpy.metrics_numpy import autotune_cost_numpy
-from basicpy.utils import safe_cast_back, maybe_tqdm
+from basicpy.utils import maybe_tqdm, make_overlap_chunks
 import tqdm
 
 try:
@@ -161,7 +161,6 @@ class BaSiC(BaseModel):
         fitting_weight: Optional[Union[np.ndarray, torch.Tensor, da.core.Array]] = None,
         skip_shape_warning=False,
         is_timelapse: bool = False,
-        require_safe_cast_back: bool = True,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         """Shortcut for `BaSiC.fit_transform`."""
         out = self.fit_transform(
@@ -169,7 +168,6 @@ class BaSiC(BaseModel):
             fitting_weight,
             skip_shape_warning,
             is_timelapse,
-            require_safe_cast_back,
         )
         gc.collect()
         for _ in range(10):
@@ -664,7 +662,10 @@ class BaSiC(BaseModel):
             Ws = Ws * (
                 Im
                 < torch.quantile(Im.reshape(Im.shape[0], -1), 0.1, dim=-1)[
-                    :, None, None, None
+                    :,
+                    None,
+                    None,
+                    None,
                 ]
             )
         # np.save("Im.npy", Im.squeeze().cpu().data.numpy())
@@ -775,7 +776,6 @@ class BaSiC(BaseModel):
         is_timelapse: Union[bool, str] = False,
         frames: Optional[Sequence[Union[int, np.int_]]] = None,
         use_tqdm: bool = True,
-        require_safe_cast_back: bool = True,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         out = self._transform(
             images,
@@ -783,7 +783,6 @@ class BaSiC(BaseModel):
             is_timelapse,
             frames,
             use_tqdm=use_tqdm,
-            require_safe_cast_back=require_safe_cast_back,
         )
         gc.collect()
         for _ in range(10):
@@ -797,7 +796,6 @@ class BaSiC(BaseModel):
         is_timelapse: Union[bool, str] = False,
         frames: Optional[Sequence[Union[int, np.int_]]] = None,
         use_tqdm: bool = True,
-        require_safe_cast_back: bool = True,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         """Apply profile to images.
 
@@ -824,99 +822,91 @@ class BaSiC(BaseModel):
 
         s = 100
 
+        chunk_inds = make_overlap_chunks(images.shape[0], s, overlap=1)
+
         if isinstance(images, torch.Tensor):
             output = torch.zeros(
                 images.shape,
                 device=images.device,
                 dtype=torch.float32,
             )
-            chunks = torch.split(images, s, dim=0)
-            if fitting_weight is not None:
-                fitting_weight_chuncks = torch.split(fitting_weight, s, dim=0)
-            else:
-                fitting_weight_chuncks = [None] * len(chunks)
         elif isinstance(images, np.ndarray):
             output = np.zeros(images.shape, dtype=np.float32)
-            chunks = np.array_split(images, np.arange(s, images.shape[0], s), axis=0)
-            if fitting_weight is not None:
-                fitting_weight_chuncks = np.array_split(
-                    fitting_weight, np.arange(s, images.shape[0], s), axis=0
-                )
-            else:
-                fitting_weight_chuncks = [None] * len(chunks)
         elif isinstance(images, da.core.Array):
             output = []
-            chunks = da.array_split(
-                images,
-                np.arange(s, images.shape[0], s),
-                axis=0,
-            )
-            if fitting_weight is not None:
-                fitting_weight_chuncks = da.array_split(
-                    fitting_weight,
-                    np.arange(s, images.shape[0], s),
-                    axis=0,
-                )
-            else:
-                fitting_weight_chuncks = [None] * len(chunks)
         else:
             raise ValueError(
                 "Input must be either numpy.ndarray, dask.core.Array, or torch.Tensor."
             )
 
-        for i, images in enumerate(
-            maybe_tqdm(chunks, use_tqdm=use_tqdm, desc="Transforming: ", leave=False)
+        baseline_previous = None
+        for i, images_inds in enumerate(
+            maybe_tqdm(
+                chunk_inds,
+                use_tqdm=use_tqdm,
+                desc="Transforming: ",
+                leave=False,
+            )
         ):
+            images_chunk = images[min(images_inds) : max(images_inds) + 1]
+            if fitting_weight is not None:
+                fitting_weight_chunk = fitting_weight[
+                    min(images_inds) : max(images_inds) + 1,
+                ]
+            else:
+                fitting_weight_chunk = None
             # Convert to the correct format
             if isinstance(images, torch.Tensor):
                 flatfield = torch.from_numpy(self.flatfield).to(images.device)
                 darkfield = torch.from_numpy(self.darkfield).to(images.device)
-                im_float = images.to(torch.float)
+                im_float = images_chunk.to(torch.float)
             elif isinstance(images, np.ndarray):
                 flatfield = self.flatfield
                 darkfield = self.darkfield
-                im_float = images.astype(np.float32)
+                im_float = images_chunk.astype(np.float32)
             elif isinstance(images, da.core.Array):
                 flatfield = self.flatfield
                 darkfield = self.darkfield
-                im_float = images.compute().astype(np.float32)
+                im_float = images_chunk.compute().astype(np.float32)
             else:
                 raise ValueError(
                     "Input must be either numpy.ndarray, dask.core.Array, or torch.Tensor."
                 )
 
             if is_timelapse:
-                if frames is None:
-                    _frames = slice(None)
-                else:
-                    _frames = np.array(frames)
-                baseline_inds = tuple([_frames] + ([None] * (images.ndim - 1)))
                 baseline = self.fit_only_baseline(
                     im_float,
-                    fitting_weight_chuncks[i],
+                    fitting_weight_chunk,
                     self.flatfield,
                     self.darkfield,
                 )
-                baseline = baseline[baseline_inds]
                 if isinstance(im_float, torch.Tensor):
                     baseline = baseline.to(im_float.device)
                 else:
                     baseline = baseline.cpu().data.numpy()
 
+                if baseline_previous is not None:
+                    baseline = baseline - baseline[0] + baseline_previous[-1]
+                else:
+                    pass
+
                 output_chunks = (im_float - darkfield[None]) / flatfield[
                     None
-                ] - baseline
+                ] - baseline[:, None, None]
+
+                baseline_previous = baseline
 
             else:
                 output_chunks = (im_float - darkfield[None]) / flatfield[None]
             if isinstance(images, da.core.Array):
-                output.append(output_chunks)
+                if i != len(chunk_inds) - 1:
+                    output.append(output_chunks[:-1])
+                else:
+                    output.append(output_chunks)
             else:
-                output[i * s : i * s + output_chunks.shape[0]] = output_chunks
+                output[min(images_inds) : max(images_inds) + 1] = output_chunks
         if isinstance(output, list):
             output = da.concatenate(output, axis=0)
-        if require_safe_cast_back:
-            output = safe_cast_back(output, images)
 
         logger.info(
             f"=== BaSiC transform finished in {time.monotonic()-start_time} seconds ==="
@@ -930,7 +920,6 @@ class BaSiC(BaseModel):
         fitting_weight: Optional[Union[np.ndarray, torch.Tensor, da.core.Array]] = None,
         skip_shape_warning=False,
         is_timelapse: bool = False,
-        require_safe_cast_back: bool = True,
     ) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         """Fit and transform on data.
 
@@ -953,7 +942,6 @@ class BaSiC(BaseModel):
             fitting_weight,
             is_timelapse,
             use_tqdm=False,
-            require_safe_cast_back=require_safe_cast_back,
         )
 
         gc.collect()
