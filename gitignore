@@ -61,3 +61,5 @@ Thumbs.db
 # Keep build and egg-info out of git even if created at custom paths
 **/build/
 **/*.egg-info/
+basicpy/__pycache__/
+
